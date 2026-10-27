@@ -3,6 +3,10 @@
 # (ios/CMakeLists.txt, REXGLUE_RUNTIME_ONLY) against the ReXGlue core and
 # filesystem libraries, whose Windows backends the SDK already provides.
 cmake_minimum_required(VERSION 3.25)
+# The SDK's byte-swap paths use SSSE3 intrinsics and assume the CPU baseline of
+# its win-amd64 preset (x86-64-v3: Haswell, 2013, or newer).
+set(CMAKE_C_FLAGS_INIT "-march=x86-64-v3")
+set(CMAKE_CXX_FLAGS_INIT "-march=x86-64-v3")
 project(Theft4WindowsStage C CXX)
 
 if(NOT WIN32)
