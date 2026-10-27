@@ -757,6 +757,7 @@ CMakeUserPresets.json
 /.github/workflows/*
 !/.github/workflows/repository-checks.yml
 !/.github/workflows/build-macos.yml
+!/.github/workflows/build-ios-ipa.yml
 !/.github/IOS_RELEASE_NOTES_TEMPLATE.md
 
 # Reproducible iOS core build and artifact validation.

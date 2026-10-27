@@ -1,0 +1,191 @@
+name: iOS sideload IPA
+
+# Builds the public sideload IPA with tools/build_ios_release.sh on a hosted
+# Mac, following docs/IOS_RELEASE_BUILD.md and docs/IOS_GAME_STARTUP.md. Uses
+# no secrets, no signing identity and no game data; the artifact holds only
+# the IPA and its SHA-256 file.
+
+on:
+  push:
+    branches: [m3-ipad-fixes]
+    paths:
+      - '.github/workflows/build-ios-ipa.yml'
+      - 'ios/**'
+      - 'tools/package_ios_ipa.sh'
+      - 'tools/build_ios_release.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches the ios-base preset: CMake 4 rejects some pinned dependencies'
+  # old cmake_minimum_required values without this floor.
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  # XeniOS is the documented source of the iPhoneOS MoltenVK archives that
+  # Theft4 still links. Pinned so every attempt builds the same sources.
+  XENIOS_REVISION: 87b176a078c316fde3adf67a217f0c44615b0e0d
+
+jobs:
+  ipa:
+    name: Build Theft4 IPA
+    runs-on: macos-26
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install CMake
+        run: python -m pip install 'cmake>=3.29,<5'
+
+      - name: Select Xcode and install the Metal toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          # Xcode 26 ships the Metal compiler as a separate component that
+          # tools/direct-metal/compile_shaders.py locates through xcodebuild.
+          xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -showComponent MetalToolchain
+          cmake --version
+          sysctl -n hw.ncpu hw.memsize
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Prepare pinned dependencies and patches
+        run: python3 tools/setup_repo.py --jobs 8
+
+      - name: Build XeniOS iPhoneOS MoltenVK archives
+        run: |
+          set -euo pipefail
+          xenios="$GITHUB_WORKSPACE/../XeniOS"
+          git clone --filter=blob:none --no-checkout --branch xenios \
+            https://github.com/xenios-jp/XeniOS.git "$xenios"
+          git -C "$xenios" checkout --detach "$XENIOS_REVISION"
+          git -C "$xenios" submodule update --init --recursive --depth 1 --jobs 8
+          cmake -S "$xenios" -B "$xenios/build-ios-xcode" -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DXENIA_ENABLE_IOS_MOLTENVK=ON
+          cmake --build "$xenios/build-ios-xcode" --config Release \
+            --target MoltenVK MoltenVK_Common MoltenVK_ShaderConverter \
+                     spirv-cross SPIRV-Tools-static --parallel "$(sysctl -n hw.ncpu)"
+          libraries=(libMoltenVK.a libMoltenVK_ShaderConverter.a libMoltenVK_Common.a
+                     libspirv-cross.a libSPIRV-Tools.a)
+          # The documented location is obj/iOS/Release; locate it rather than
+          # assume, and require all five archives side by side.
+          found="$(find "$xenios/build-ios-xcode" -name libMoltenVK.a -path '*Release*' -print -quit)"
+          if [[ -z "$found" ]]; then
+            echo "::error::libMoltenVK.a was not produced"
+            find "$xenios/build-ios-xcode" -name '*.a' | head -50
+            exit 1
+          fi
+          library_dir="$(dirname "$found")"
+          for library in "${libraries[@]}"; do
+            if [[ ! -f "$library_dir/$library" ]]; then
+              echo "::error::Missing $library beside libMoltenVK.a in $library_dir"
+              ls -la "$library_dir"
+              exit 1
+            fi
+            lipo -info "$library_dir/$library"
+          done
+          echo "THEFT4_MOLTENVK_IOS_LIB_DIR=$library_dir" >> "$GITHUB_ENV"
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Export and compile offline Metal shaders
+        run: |
+          set -euo pipefail
+          cmake -S tools/direct-metal -B out/direct-metal/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/direct-metal/build --parallel "$(sysctl -n hw.ncpu)" \
+            --target metal_shader_export metal_host_shader_export
+          out/direct-metal/build/metal_shader_export out/direct-metal/corpus
+          out/direct-metal/build/metal_host_shader_export out/direct-metal/host-corpus
+          # compile_shaders.py exits non-zero when any shader is rejected.
+          python3 tools/direct-metal/compile_shaders.py out/direct-metal/corpus \
+            out/direct-metal/ios --platform ios --jobs "$(sysctl -n hw.ncpu)" > /dev/null
+          python3 tools/direct-metal/compile_shaders.py out/direct-metal/host-corpus \
+            out/direct-metal/ios/Host --platform ios --jobs "$(sysctl -n hw.ncpu)" > /dev/null
+          python3 - <<'PY'
+          import json
+          for path in ('out/direct-metal/ios/COMPILATION.json',
+                       'out/direct-metal/ios/Host/COMPILATION.json'):
+              report = json.load(open(path))
+              print(path, 'sources', report['sources'], 'compiled', report['compiled'],
+                    'rejected', len(report['rejected']))
+              assert report['sources'] and not report['rejected'], path
+          PY
+          echo "THEFT4_METAL_LIBRARIES=$PWD/out/direct-metal/ios" >> "$GITHUB_ENV"
+          echo "THEFT4_METAL_HOST_LIBRARIES=$PWD/out/direct-metal/ios/Host" >> "$GITHUB_ENV"
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Build and package the IPA
+        env:
+          # Generated game code is large; keep parallel compiles within the
+          # hosted runner's memory.
+          THEFT4_BUILD_JOBS: '3'
+        run: |
+          set -euo pipefail
+          ./tools/build_ios_release.sh 0.3.2
+          ls -la dist
+          cat dist/*.sha256
+
+      - name: Audit the IPA
+        run: |
+          set -euo pipefail
+          ipa="$(ls dist/*.ipa)"
+          audit="$RUNNER_TEMP/ipa-audit"
+          mkdir -p "$audit"
+          unzip -q "$ipa" -d "$audit"
+          app="$audit/Payload/Theft4.app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' -c 'Print :CFBundleShortVersionString' \
+            -c 'Print :CFBundleVersion' -c 'Print :Theft4SourceRevision' "$app/Info.plist"
+          lipo -info "$app/Theft4"
+          entitlements="$(codesign -d --entitlements - --xml "$app" 2>/dev/null || true)"
+          echo "$entitlements"
+          if [[ "$entitlements" != *com.apple.developer.kernel.increased-memory-limit* ]]; then
+            echo "::error::increased-memory-limit request missing"; exit 1
+          fi
+          signature="$(codesign -dv "$app" 2>&1 || true)"
+          echo "$signature" | grep -E '^(Identifier|Signature|TeamIdentifier)=' || true
+          if [[ "$signature" != *$'\n'TeamIdentifier=not\ set* ]]; then
+            echo "::error::Signature names a development team"; exit 1
+          fi
+          test ! -e "$app/embedded.mobileprovision"
+          # No bundled game data and no builder paths. Results are captured
+          # before testing: an early-exiting grep under pipefail would turn a
+          # real match into a SIGPIPE failure and hide it.
+          game_files="$(find "$app" -type f \( -iname '*.xex' -o -iname '*.xexp' -o -iname '*.rpf' \
+               -o -iname '*.iso' -o -iname 'aes_key.bin' \))"
+          if [[ -n "$game_files" ]]; then
+            echo "::error::Game data found in the IPA: $game_files"; exit 1
+          fi
+          local_paths="$(strings "$app/Theft4" | grep -E '/Users/|/home/runner' || true)"
+          if [[ -n "$local_paths" ]]; then
+            echo "::error::Local build path found in the executable"
+            echo "$local_paths" | head -5; exit 1
+          fi
+          echo "Metal libraries: $(find "$app" -name '*.metallib' | wc -l)"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Theft4-0.3.2-m3-ipad-fixes-${{ github.sha }}
+          path: |
+            dist/*.ipa
+            dist/*.ipa.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
