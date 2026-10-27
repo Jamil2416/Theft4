@@ -11,6 +11,10 @@
 @property(nonatomic, readonly) UISwitch *showFPS;
 @property(nonatomic, readonly) UISwitch *showFrameTime;
 @property(nonatomic, readonly) UISwitch *showControls;
+// Controller light-bar color, 0-255 per channel.
+@property(nonatomic, readonly) UISlider *lightRed;
+@property(nonatomic, readonly) UISlider *lightGreen;
+@property(nonatomic, readonly) UISlider *lightBlue;
 @property(nonatomic, readonly) UISwitch *anisotropicFiltering;
 @property(nonatomic, readonly) UISwitch *enhancedOutput;
 @property(nonatomic, readonly) UISwitch *fsrBoost;

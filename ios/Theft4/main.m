@@ -904,6 +904,7 @@ static void bootEvent(void *context, const char *event) {
         [_bringupOverlay.sharpening addTarget:self action:@selector(displaySettingsChanged:)
             forControlEvents:UIControlEventValueChanged];
     }
+    [self loadControllerLight];
     if (_bringupOverlay.renderResolution) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         uint32_t height = theft4_lab_render_height((uint32_t)[defaults integerForKey:@"Theft4LabRenderHeight"]);
@@ -2017,6 +2018,58 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self presentViewController:alert animated:YES completion:nil];
 }
 #endif
+// Controller light bar, 0-255 per channel; the default is the DualSense's own
+// blue. The game's input driver reads THEFT4_CONTROLLER_LIGHT whenever a
+// controller connects, so it is set only here, from the launcher, never while
+// game threads may be reading the environment.
+- (void)loadControllerLight {
+    if (!_bringupOverlay.lightRed) return;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSArray<UISlider *> *sliders = @[_bringupOverlay.lightRed, _bringupOverlay.lightGreen, _bringupOverlay.lightBlue];
+    NSArray<NSString *> *keys = @[@"Theft4LightRed", @"Theft4LightGreen", @"Theft4LightBlue"];
+    const NSInteger fallback[] = {0, 0, 255};
+    for (NSUInteger i = 0; i < sliders.count; ++i) {
+        id stored = [defaults objectForKey:keys[i]];
+        sliders[i].value = stored ? MAX(0, MIN(255, [stored integerValue])) : fallback[i];
+        [sliders[i] addTarget:self action:@selector(controllerLightChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    }
+    [_bringupOverlay refreshConfigurationSummary];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(controllerConnectedForLight:)
+        name:GCControllerDidConnectNotification object:nil];
+    [self publishControllerLight];
+}
+
+- (void)controllerLightChanged:(UISlider *)sender {
+    sender.value = roundf(sender.value);
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setInteger:(NSInteger)_bringupOverlay.lightRed.value forKey:@"Theft4LightRed"];
+    [defaults setInteger:(NSInteger)_bringupOverlay.lightGreen.value forKey:@"Theft4LightGreen"];
+    [defaults setInteger:(NSInteger)_bringupOverlay.lightBlue.value forKey:@"Theft4LightBlue"];
+    if (!_executionAttempted) [self publishControllerLight];
+    [self showControllerLight];
+}
+
+- (void)publishControllerLight {
+    NSString *value = [NSString stringWithFormat:@"%ld,%ld,%ld",
+        lroundf(_bringupOverlay.lightRed.value), lroundf(_bringupOverlay.lightGreen.value),
+        lroundf(_bringupOverlay.lightBlue.value)];
+    setenv("THEFT4_CONTROLLER_LIGHT", value.UTF8String, 1);
+    [self showControllerLight];
+}
+
+- (void)showControllerLight {
+    GCColor *color = [[GCColor alloc] initWithRed:roundf(_bringupOverlay.lightRed.value) / 255.0f
+        green:roundf(_bringupOverlay.lightGreen.value) / 255.0f
+        blue:roundf(_bringupOverlay.lightBlue.value) / 255.0f];
+    for (GCController *controller in GCController.controllers) controller.light.color = color;
+}
+
+- (void)controllerConnectedForLight:(NSNotification *)note {
+    (void)note;
+    [self showControllerLight];
+}
+
 - (void)displaySettingsChanged:(UIControl *)sender {
     if (sender) [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"Theft4GraphicsPreset"];
     if (_bringupOverlay.sharpening) {

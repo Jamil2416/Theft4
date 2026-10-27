@@ -22,7 +22,10 @@
 #import <CoreHaptics/CoreHaptics.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <rex/input/absolute_pointer.h>
@@ -32,41 +35,177 @@
 // Per-controller Obj-C state
 // ---------------------------------------------------------------------------
 
+// One haptic actuator group driven like an Xbox 360 rumble motor. A looping
+// continuous event plays at full base intensity; each motor change only sends
+// an intensity-control parameter, so the game's per-frame XInputSetState calls
+// never rebuild or restart a pattern. Every method runs on the owning
+// controller's serial queue, including the engine's reset/stop callbacks.
+API_AVAILABLE(ios(14.0), tvos(14.0))
+@interface LRIOSRumbleChannel : NSObject
+- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics
+                       locality:(GCHapticsLocality)locality
+                      sharpness:(float)sharpness
+                          queue:(dispatch_queue_t)queue;
+- (void)applyIntensity:(float)intensity;
+- (void)teardown;
+@end
+
+@implementation LRIOSRumbleChannel {
+  CHHapticEngine* _engine;
+  id<CHHapticAdvancedPatternPlayer> _player;
+  float _sharpness;
+  float _applied;
+  BOOL _running;
+}
+
+- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics
+                       locality:(GCHapticsLocality)locality
+                      sharpness:(float)sharpness
+                          queue:(dispatch_queue_t)queue {
+  self = [super init];
+  if (!self) return nil;
+  _engine = [haptics createEngineWithLocality:locality];
+  if (!_engine) return nil;
+  _sharpness = sharpness;
+  // A reset invalidates every player and a stop halts playback; either way
+  // the next nonzero intensity starts the engine and a player again.
+  __weak LRIOSRumbleChannel* weakSelf = self;
+  dispatch_block_t forget = ^{
+    LRIOSRumbleChannel* channel = weakSelf;
+    if (!channel) return;
+    channel->_player = nil;
+    channel->_running = NO;
+    channel->_applied = 0.0f;
+  };
+  _engine.resetHandler = ^{ dispatch_async(queue, forget); };
+  _engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
+    (void)reason;
+    dispatch_async(queue, forget);
+  };
+  return self;
+}
+
+- (BOOL)preparePlayer {
+  if (_player) return YES;
+  NSError* error = nil;
+  if (![_engine startAndReturnError:&error]) return NO;
+  CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc]
+      initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
+  CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc]
+      initWithParameterID:CHHapticEventParameterIDHapticSharpness value:_sharpness];
+  // Continuous events are limited to 30 seconds; looping makes the motor
+  // hold until the game changes it.
+  CHHapticEvent* event = [[CHHapticEvent alloc]
+      initWithEventType:CHHapticEventTypeHapticContinuous
+             parameters:@[intensity, sharpness]
+           relativeTime:0
+               duration:30.0];
+  CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event]
+                                                          parameters:@[]
+                                                               error:&error];
+  if (!pattern) return NO;
+  _player = [_engine createAdvancedPlayerWithPattern:pattern error:&error];
+  if (!_player) return NO;
+  _player.loopEnabled = YES;
+  return YES;
+}
+
+- (void)applyIntensity:(float)intensity {
+  intensity = std::clamp(intensity, 0.0f, 1.0f);
+  // Motor speeds arrive as 16-bit values; ignore changes the actuators
+  // cannot express rather than resending them every frame.
+  if (std::fabs(intensity - _applied) < 1.0f / 255.0f && (intensity > 0.0f) == _running) return;
+  NSError* error = nil;
+  if (intensity <= 0.0f) {
+    if (_running) [_player stopAtTime:CHHapticTimeImmediate error:&error];
+    _running = NO;
+    _applied = 0.0f;
+    return;
+  }
+  if (![self preparePlayer]) return;
+  CHHapticDynamicParameter* control = [[CHHapticDynamicParameter alloc]
+      initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+                    value:intensity
+             relativeTime:0];
+  if (!_running) {
+    if (![_player startAtTime:CHHapticTimeImmediate error:&error]) {
+      // The engine may have stopped itself (for example when idle); restart
+      // it once and retry with a fresh player.
+      _player = nil;
+      if (![self preparePlayer] || ![_player startAtTime:CHHapticTimeImmediate error:&error]) return;
+    }
+    _running = YES;
+  }
+  [_player sendParameters:@[control] atTime:CHHapticTimeImmediate error:&error];
+  _applied = intensity;
+}
+
+- (void)teardown {
+  NSError* error = nil;
+  if (_running) [_player stopAtTime:CHHapticTimeImmediate error:&error];
+  _player = nil;
+  _running = NO;
+  [_engine stopWithCompletionHandler:^(NSError* _Nullable e) { (void)e; }];
+  _engine = nil;
+}
+
+@end
+
 API_AVAILABLE(ios(14.0), tvos(14.0))
 @interface LRIOSControllerBridge : NSObject
 @property(nonatomic, strong) GCController* controller;
-@property(nonatomic, strong) CHHapticEngine* hapticEngine;
-@property(nonatomic, strong) id<CHHapticPatternPlayer> rumblePlayer;
 - (instancetype)initWithController:(GCController*)controller;
 - (void)rumbleLeft:(float)left right:(float)right;
 - (void)teardown;
 @end
 
-@implementation LRIOSControllerBridge
+@implementation LRIOSControllerBridge {
+  // Separate grips when the controller exposes them (DualSense, DualShock 4,
+  // Xbox): the Xbox low-frequency left motor drives the left grip and the
+  // high-frequency right motor the right grip. Otherwise one mixed channel.
+  // The channels are only touched on _queue.
+  LRIOSRumbleChannel* _left;
+  LRIOSRumbleChannel* _right;
+  LRIOSRumbleChannel* _mixed;
+  dispatch_queue_t _queue;
+  std::atomic<uint32_t> _pending;
+  std::atomic<bool> _scheduled;
+  std::atomic<bool> _rumbleActive;
+}
 
 - (instancetype)initWithController:(GCController*)controller {
   self = [super init];
   if (!self) return nil;
   _controller = controller;
+  _queue = dispatch_queue_create("rex.input.ios.rumble", DISPATCH_QUEUE_SERIAL);
+  _pending.store(0);
+  _scheduled.store(false);
+  _rumbleActive.store(false);
 
-  // Lazily build a haptic engine for the controller if it exposes one.
   if (@available(iOS 14.0, tvOS 14.0, *)) {
     GCDeviceHaptics* haptics = controller.haptics;
     if (haptics) {
-      _hapticEngine = [haptics createEngineWithLocality:GCHapticsLocalityDefault];
-      if (_hapticEngine) {
-        __weak LRIOSControllerBridge* weakSelf = self;
-        _hapticEngine.resetHandler = ^{
-          LRIOSControllerBridge* s = weakSelf;
-          if (!s) return;
-          NSError* err = nil;
-          [s.hapticEngine startAndReturnError:&err];
-          (void)err;
-        };
-        NSError* err = nil;
-        [_hapticEngine startAndReturnError:&err];
-        (void)err;
+      NSSet<GCHapticsLocality>* localities = haptics.supportedLocalities;
+      if ([localities containsObject:GCHapticsLocalityLeftHandle] &&
+          [localities containsObject:GCHapticsLocalityRightHandle]) {
+        _left = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
+                                                   locality:GCHapticsLocalityLeftHandle
+                                                  sharpness:0.25f
+                                                      queue:_queue];
+        _right = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
+                                                    locality:GCHapticsLocalityRightHandle
+                                                   sharpness:0.75f
+                                                       queue:_queue];
       }
+      if (!_left || !_right) {
+        _left = nil;
+        _right = nil;
+        _mixed = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
+                                                    locality:GCHapticsLocalityDefault
+                                                   sharpness:0.5f
+                                                       queue:_queue];
+      }
+      _rumbleActive.store(_left || _mixed);
     }
     // Enable motion sampling if supported (gyro/accel).
     if (controller.motion) {
@@ -77,61 +216,69 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
 }
 
 - (void)rumbleLeft:(float)left right:(float)right {
-  if (@available(iOS 14.0, tvOS 14.0, *)) {
-    if (!_hapticEngine) return;
-    dispatch_block_t block = ^{
-      NSError* err = nil;
-      if (self.rumblePlayer) {
-        [self.rumblePlayer stopAtTime:0 error:&err];
-        self.rumblePlayer = nil;
-      }
-      float mixed = std::min(1.0f, std::max(left, right) * 0.7f +
-                                       std::min(left, right) * 0.3f);
-      if (mixed <= 0.0f) return;
-      [self.hapticEngine startAndReturnError:&err];
-
-      CHHapticEventParameter* intensity =
-          [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity
-                                                        value:mixed];
-      CHHapticEventParameter* sharpness =
-          [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
-                                                        value:0.5f];
-      CHHapticEvent* event =
-          [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-                                        parameters:@[intensity, sharpness]
-                                      relativeTime:0
-                                          duration:0.5];
-      CHHapticPattern* pattern =
-          [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
-      if (!pattern) return;
-      self.rumblePlayer = [self.hapticEngine createPlayerWithPattern:pattern error:&err];
-      if (self.rumblePlayer) {
-        [self.rumblePlayer startAtTime:0 error:&err];
-      }
-      (void)err;
-    };
-    if ([NSThread isMainThread]) block();
-    else dispatch_async(dispatch_get_main_queue(), block);
-  }
+  if (!_rumbleActive.load(std::memory_order_acquire)) return;
+  // Keep only the newest motor pair; at most one apply is queued at a time,
+  // so a burst of SetState calls costs one haptic update.
+  const uint32_t packed = (uint32_t(std::lround(std::clamp(left, 0.0f, 1.0f) * 65535.0f)) << 16) |
+                          uint32_t(std::lround(std::clamp(right, 0.0f, 1.0f) * 65535.0f));
+  _pending.store(packed, std::memory_order_release);
+  if (_scheduled.exchange(true, std::memory_order_acq_rel)) return;
+  __weak LRIOSControllerBridge* weakSelf = self;
+  dispatch_async(_queue, ^{
+    LRIOSControllerBridge* bridge = weakSelf;
+    if (!bridge) return;
+    bridge->_scheduled.store(false, std::memory_order_release);
+    const uint32_t value = bridge->_pending.load(std::memory_order_acquire);
+    const float l = float(value >> 16) / 65535.0f;
+    const float r = float(value & 0xFFFFu) / 65535.0f;
+    if (bridge->_left) {
+      [bridge->_left applyIntensity:l];
+      [bridge->_right applyIntensity:r];
+    } else {
+      [bridge->_mixed applyIntensity:std::min(1.0f, std::max(l, r) * 0.7f + std::min(l, r) * 0.3f)];
+    }
+  });
 }
 
 - (void)teardown {
   if (@available(iOS 14.0, tvOS 14.0, *)) {
-    NSError* err = nil;
-    if (_rumblePlayer) { [_rumblePlayer stopAtTime:0 error:&err]; _rumblePlayer = nil; }
-    if (_hapticEngine) {
-      [_hapticEngine stopWithCompletionHandler:^(NSError* _Nullable e) { (void)e; }];
-      _hapticEngine = nil;
-    }
+    _rumbleActive.store(false, std::memory_order_release);
+    // Runs after any queued apply; the block keeps the bridge alive until the
+    // motors have stopped.
+    dispatch_async(_queue, ^{
+      [self->_left teardown];
+      [self->_right teardown];
+      [self->_mixed teardown];
+      self->_left = nil;
+      self->_right = nil;
+      self->_mixed = nil;
+    });
     if (_controller && _controller.motion) {
       _controller.motion.sensorsActive = NO;
     }
-    (void)err;
   }
   _controller = nil;
 }
 
 @end
+
+// The launcher passes its light-bar choice as "R,G,B" (0-255 each). Called on
+// the main queue with the controller itself, not the bridge, so a disconnect
+// on the input thread cannot race it.
+API_AVAILABLE(ios(14.0), tvos(14.0))
+static void ApplyLightColor(GCController* controller) {
+  const char* value = std::getenv("THEFT4_CONTROLLER_LIGHT");
+  if (!value || !controller.light) return;
+  unsigned red = 0, green = 0, blue = 0;
+  char extra = 0;
+  if (std::sscanf(value, "%u,%u,%u%c", &red, &green, &blue, &extra) != 3 ||
+      red > 255 || green > 255 || blue > 255) {
+    return;
+  }
+  controller.light.color = [[GCColor alloc] initWithRed:red / 255.0f
+                                                  green:green / 255.0f
+                                                   blue:blue / 255.0f];
+}
 
 namespace rex::input::ios {
 
@@ -246,6 +393,8 @@ void IOSInputDriver::HandleConnect(void* gc_raw) {
         LRIOSControllerBridge* bridge =
             [[LRIOSControllerBridge alloc] initWithController:controller];
         ios->bridge_retained = (__bridge_retained void*)bridge;
+        // Light-bar changes are UI-thread GameController calls.
+        dispatch_async(dispatch_get_main_queue(), ^{ ApplyLightColor(controller); });
       } else {
         // Pre-iOS 14: no haptics, but we still want polling.
         ios->bridge_retained = nullptr;

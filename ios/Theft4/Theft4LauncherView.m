@@ -43,6 +43,17 @@ static UIStackView *Column(NSArray<UIView *> *views, CGFloat spacing) {
     return stack;
 }
 
+static UISlider *LightSlider(NSString *identifier, NSString *label, UIColor *tint) {
+    UISlider *slider = [UISlider new];
+    slider.minimumValue = 0;
+    slider.maximumValue = 255;
+    slider.minimumTrackTintColor = tint;
+    slider.accessibilityIdentifier = [@"settings." stringByAppendingString:identifier];
+    slider.accessibilityLabel = label;
+    [slider.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+    return slider;
+}
+
 static UIButton *Action(NSString *title, BOOL primary) {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
@@ -98,6 +109,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UILabel *_masthead, *_edition, *_wordmark, *_sceneCaption, *_configuration;
     UILabel *_resolutionSummary, *_pageTitle, *_pageDetail, *_controllerHint;
     UILabel *_shadowMetrics, *_distanceMetrics, *_modelMetrics, *_reflectionMetrics, *_aaMetrics, *_sharpeningMetrics;
+    UILabel *_lightMetrics;
+    UIView *_lightSwatch;
     UIView *_topRule, *_bottomRule, *_navRule;
     UIScrollView *_scroll, *_navigationScroll;
     UIStackView *_content, *_navigation;
@@ -379,7 +392,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"FRAME COUNTER" detail:@"Unique game frames in the top-right corner." toggle:_showFPS],
         [self setting:@"FRAME-TIME GRAPH" detail:@"Frame delivery against the 33.3 ms target. Double-tap for a short detailed profile. Hold to mark a lag spike or stop and save a long capture." toggle:_showFrameTime],
         [self setting:@"TOUCH CONTROLS" detail:@"Physical controllers continue to work when the overlay is hidden." toggle:_showControls],
-        Copy(@"A connected controller can move focus through this launcher. Use the D-pad or left stick to navigate and A to select.", 12, NO)
+        Copy(@"A connected controller can move focus through this launcher. Use the D-pad or left stick to navigate and A to select.", 12, NO),
+        [self lightBarSetting]
     ], 20);
 
     _prepareButton = Action(@"VERIFY GAME FILES", NO);
@@ -826,7 +840,52 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         index == 4 ? THEFT4_LAB_NATIVE_16_9 : 720;
 }
 
+- (UIView *)lightBarSetting {
+    _lightRed = LightSlider(@"lightRed", @"Light bar red", Ink(0xE5484D));
+    _lightGreen = LightSlider(@"lightGreen", @"Light bar green", Ink(0x46A758));
+    _lightBlue = LightSlider(@"lightBlue", @"Light bar blue", Ink(0x3E63DD));
+    _lightSwatch = [UIView new];
+    _lightSwatch.layer.cornerRadius = 3;
+    _lightSwatch.layer.borderWidth = 1;
+    _lightSwatch.layer.borderColor = Ink(0x3A4A4E).CGColor;
+    _lightSwatch.isAccessibilityElement = NO;
+    [_lightSwatch.widthAnchor constraintEqualToConstant:44].active = YES;
+    [_lightSwatch.heightAnchor constraintEqualToConstant:24].active = YES;
+    _lightMetrics = Copy(@"", 12, YES);
+    UIStackView *preview = [[UIStackView alloc] initWithArrangedSubviews:@[_lightSwatch, _lightMetrics]];
+    preview.alignment = UIStackViewAlignmentCenter;
+    preview.spacing = 12;
+    NSMutableArray<UIView *> *rows = [NSMutableArray new];
+    NSArray<NSString *> *names = @[@"R", @"G", @"B"];
+    NSArray<UISlider *> *sliders = @[_lightRed, _lightGreen, _lightBlue];
+    for (NSUInteger i = 0; i < sliders.count; ++i) {
+        UILabel *name = Copy(names[i], 12, YES);
+        [name.widthAnchor constraintEqualToConstant:16].active = YES;
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[name, sliders[i]]];
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 12;
+        [rows addObject:row];
+        [sliders[i] addTarget:self action:@selector(refreshConfigurationSummary)
+            forControlEvents:UIControlEventValueChanged];
+    }
+    UILabel *title = Copy(@"CONTROLLER LIGHT BAR", 14, YES);
+    title.textColor = Ink(0xECE7D7);
+    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObjects:title,
+        Copy(@"Color shown on a DualSense or DualShock 4 light bar. Changes show on a connected controller right away and stay set during gameplay.", 12, NO), nil];
+    [views addObjectsFromArray:rows];
+    [views addObject:preview];
+    return Column(views, 8);
+}
+
 - (void)refreshConfigurationSummary {
+    if (_lightRed) {
+        const long red = lroundf(_lightRed.value), green = lroundf(_lightGreen.value), blue = lroundf(_lightBlue.value);
+        _lightSwatch.backgroundColor = Ink((unsigned)(red << 16 | green << 8 | blue));
+        _lightMetrics.text = [NSString stringWithFormat:@"R %ld · G %ld · B %ld", red, green, blue];
+        _lightRed.accessibilityValue = [NSString stringWithFormat:@"%ld", red];
+        _lightGreen.accessibilityValue = [NSString stringWithFormat:@"%ld", green];
+        _lightBlue.accessibilityValue = [NSString stringWithFormat:@"%ld", blue];
+    }
     if (_sharpening) {
         const NSInteger strength = (NSInteger)lroundf(_sharpening.value);
         _sharpeningMetrics.text = strength ? [NSString stringWithFormat:@"%ld%% · NEXT GAME LAUNCH", (long)strength] : @"OFF · 0%";
