@@ -79,6 +79,17 @@ jobs:
             https://github.com/xenios-jp/XeniOS.git "$xenios"
           git -C "$xenios" checkout --detach "$XENIOS_REVISION"
           git -C "$xenios" submodule update --init --recursive --depth 1 --jobs 8
+          # XeniOS's iOS configure imports a native macOS xenia-shader-cc from
+          # build/host_tools/<Config>/. A multi-config (Xcode) host tree places
+          # it in that per-configuration directory.
+          cmake -S "$xenios" -B "$xenios/build" -G Xcode
+          cmake --build "$xenios/build" --config Release --target xenia-shader-cc \
+            --parallel "$(sysctl -n hw.ncpu)"
+          if [[ ! -x "$xenios/build/host_tools/Release/xenia-shader-cc" ]]; then
+            echo "xenia-shader-cc is not at build/host_tools/Release:"
+            find "$xenios/build" -name xenia-shader-cc
+            exit 1
+          fi
           cmake -S "$xenios" -B "$xenios/build-ios-xcode" -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
