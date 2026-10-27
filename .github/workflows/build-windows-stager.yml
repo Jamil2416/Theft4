@@ -63,6 +63,15 @@ jobs:
           # --classic: the repository's own vcpkg.json would otherwise put
           # vcpkg in manifest mode, which rejects a single-package install.
           "$VCPKG_INSTALLATION_ROOT/vcpkg" install --classic zlib:x64-windows-static 2>&1 | tee "$RUNNER_TEMP/logs/zlib.log"
+          # vcpkg names the static library zs.lib, which FindZLIB does not
+          # search for, so name the one release library explicitly.
+          libs="$(find "$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/lib" -maxdepth 1 -name '*.lib')"
+          printf 'zlib libraries: %s\n' "$libs" | tee -a "$RUNNER_TEMP/logs/zlib.log"
+          if [[ "$(printf '%s\n' "$libs" | grep -c .)" != 1 ]]; then
+            echo "Expected exactly one release zlib library" >&2
+            exit 1
+          fi
+          echo "THEFT4_ZLIB_LIBRARY=$(cygpath -w "$libs")" >> "$GITHUB_ENV"
 
       - name: Build theft4_stage
         shell: cmd
@@ -74,6 +83,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ^
             "-DZLIB_ROOT=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows-static" ^
+            "-DZLIB_LIBRARY=%THEFT4_ZLIB_LIBRARY%" ^
             > "%RUNNER_TEMP%\logs\configure.log" 2>&1
           if errorlevel 1 (type "%RUNNER_TEMP%\logs\configure.log" & exit /b 1)
           cmake --build out/windows-stage --target theft4_stage --parallel 4 ^
