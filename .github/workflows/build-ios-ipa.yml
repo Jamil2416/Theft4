@@ -65,11 +65,15 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
       - name: Prepare pinned dependencies and patches
-        run: python3 tools/setup_repo.py --jobs 8
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          python3 tools/setup_repo.py --jobs 8 2>&1 | tee "$RUNNER_TEMP/logs/setup.log"
 
       - name: Build XeniOS iPhoneOS MoltenVK archives
         run: |
           set -euo pipefail
+          {
           xenios="$GITHUB_WORKSPACE/../XeniOS"
           git clone --filter=blob:none --no-checkout --branch xenios \
             https://github.com/xenios-jp/XeniOS.git "$xenios"
@@ -104,10 +108,12 @@ jobs:
           done
           echo "THEFT4_MOLTENVK_IOS_LIB_DIR=$library_dir" >> "$GITHUB_ENV"
           df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee "$RUNNER_TEMP/logs/xenios.log"
 
       - name: Export and compile offline Metal shaders
         run: |
           set -euo pipefail
+          {
           cmake -S tools/direct-metal -B out/direct-metal/build -DCMAKE_BUILD_TYPE=Release
           cmake --build out/direct-metal/build --parallel "$(sysctl -n hw.ncpu)" \
             --target metal_shader_export metal_host_shader_export
@@ -130,6 +136,7 @@ jobs:
           echo "THEFT4_METAL_LIBRARIES=$PWD/out/direct-metal/ios" >> "$GITHUB_ENV"
           echo "THEFT4_METAL_HOST_LIBRARIES=$PWD/out/direct-metal/ios/Host" >> "$GITHUB_ENV"
           df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee "$RUNNER_TEMP/logs/shaders.log"
 
       - name: Build and package the IPA
         env:
@@ -138,9 +145,11 @@ jobs:
           THEFT4_BUILD_JOBS: '3'
         run: |
           set -euo pipefail
+          {
           ./tools/build_ios_release.sh 0.3.2
           ls -la dist
           cat dist/*.sha256
+          } 2>&1 | tee "$RUNNER_TEMP/logs/build.log"
 
       - name: Audit the IPA
         run: |
@@ -178,6 +187,33 @@ jobs:
             echo "$local_paths" | head -5; exit 1
           fi
           echo "Metal libraries: $(find "$app" -name '*.metallib' | wc -l)"
+
+      # Run logs need a signed-in viewer; check-run annotations are public.
+      # Publish the failing step's error lines and log tail as annotations so
+      # a failure can be diagnosed from the API alone.
+      - name: Publish failure diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          logs = sorted(pathlib.Path(os.environ['RUNNER_TEMP'], 'logs').glob('*.log'),
+                        key=lambda p: p.stat().st_mtime)
+          if not logs:
+              raise SystemExit(0)
+          log = logs[-1]  # the most recently written log is the failing step's
+          lines = [l.rstrip()[:300] for l in log.read_text(errors='replace').splitlines()]
+          pattern = re.compile(r'error[: ]|fatal|failed|not found|No such file|undefined|BUILD FAILED',
+                               re.IGNORECASE)
+          errors = [l for l in lines if pattern.search(l) and not l.lstrip().startswith('warning')]
+          def emit(title, chunk):
+              text = '\n'.join(chunk).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title={title}::{text}', flush=True)
+          for index in range(0, min(len(errors), 120), 40):
+              emit(f'{log.stem} errors {index // 40 + 1}', errors[-120:][index:index + 40])
+          tail = lines[-160:]
+          for index in range(0, len(tail), 40):
+              emit(f'{log.stem} tail {index // 40 + 1}', tail[index:index + 40])
+          PY
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
