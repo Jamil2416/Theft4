@@ -49,7 +49,8 @@ jobs:
           python-version: '3.12'
 
       - name: Install CMake
-        run: python -m pip install 'cmake>=3.29,<5'
+        # Ninja is XeniOS's default host generator (Ninja Multi-Config).
+        run: python -m pip install 'cmake>=3.29,<5' ninja
 
       - name: Select Xcode and install the Metal toolchain
         run: |
@@ -79,19 +80,22 @@ jobs:
             https://github.com/xenios-jp/XeniOS.git "$xenios"
           git -C "$xenios" checkout --detach "$XENIOS_REVISION"
           git -C "$xenios" submodule update --init --recursive --depth 1 --jobs 8
-          # XeniOS's iOS configure imports a native macOS xenia-shader-cc from
-          # build/host_tools/<Config>/. A multi-config (Xcode) host tree places
-          # it in that per-configuration directory.
-          cmake -S "$xenios" -B "$xenios/build" -G Xcode
-          cmake --build "$xenios/build" --config Release --target xenia-shader-cc \
-            --parallel "$(sysctl -n hw.ncpu)"
+          # XeniOS's iOS configure needs its data repositories and a native
+          # macOS xenia-shader-cc in build/host_tools/<Config>/. Use XeniOS's
+          # own build script for both, as its configure error instructs.
+          (cd "$xenios" && python3 xenia-build.py fetchdata)
+          (cd "$xenios" && python3 xenia-build.py build --target=xenia-shader-cc --config=release)
           if [[ ! -x "$xenios/build/host_tools/Release/xenia-shader-cc" ]]; then
             echo "xenia-shader-cc is not at build/host_tools/Release:"
             find "$xenios/build" -name xenia-shader-cc
             exit 1
           fi
+          # Same flags as xenia-build.py's own iOS configure (run_cmake_configure
+          # with target_os=ios), which the Theft4 doc's shorter command omits.
           cmake -S "$xenios" -B "$xenios/build-ios-xcode" -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DXENIA_ENABLE_IOS_MOLTENVK=ON
