@@ -61,3 +61,6 @@ target_compile_features(theft4_game_install PRIVATE cxx_std_23)
 add_executable(theft4_stage "${THEFT4_ROOT}/ios/tools/stage_game.cpp")
 target_link_libraries(theft4_stage PRIVATE theft4_game_install)
 target_compile_features(theft4_stage PRIVATE cxx_std_23)
+# A link map resolves crash-dump offsets to functions without shipping debug
+# information; it is written beside the program as theft4_stage.map.
+target_link_options(theft4_stage PRIVATE "LINKER:/MAP")

@@ -10,7 +10,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "Usage: theft4_stage <base ISO> <update package> <NEW install directory>\n");
         return 2;
     }
-    rex::InitLogging();
+    // A command-line tool: show the SDK's own errors (for example a disc
+    // image or package that cannot be mounted) beside the final result.
+    rex::LogConfig logging;
+    logging.log_to_console = true;
+    rex::InitLogging(logging);
     int status = 2;
     try {
         const auto destination = std::filesystem::absolute(argv[3]).lexically_normal();

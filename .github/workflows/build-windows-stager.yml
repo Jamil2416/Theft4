@@ -137,6 +137,10 @@ jobs:
 
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item $exe.FullName dist/theft4_stage.exe
+          # The link map turns crash-dump offsets into function names.
+          $map = Join-Path $exe.DirectoryName 'theft4_stage.map'
+          if (-not (Test-Path $map)) { throw 'The linker did not write theft4_stage.map' }
+          Copy-Item $map dist/theft4_stage.map
           $hash = (Get-FileHash dist/theft4_stage.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  theft4_stage.exe" | Set-Content -NoNewline -Encoding ascii dist/theft4_stage.exe.sha256
           $size = (Get-Item dist/theft4_stage.exe).Length
@@ -174,5 +178,6 @@ jobs:
           path: |
             dist/theft4_stage.exe
             dist/theft4_stage.exe.sha256
+            dist/theft4_stage.map
           if-no-files-found: error
           retention-days: 7
