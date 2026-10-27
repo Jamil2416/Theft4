@@ -37,8 +37,13 @@ int main(int argc, char** argv) {
             result = gta4::install::VerifyInstall(destination / "game", destination / "dlc");
         reporter.request_stop();
         status = result.success ? 0 : 1;
-        std::printf("Staging %s: %s\n", result.success ? "VERIFIED" : "FAILED",
-            result.success ? destination.c_str() : result.error.c_str());
+        // path::c_str() is wide on Windows, and path::string() throws there for
+        // names outside the ANSI code page; the UTF-8 form works on every host.
+        const auto destination_utf8 = destination.u8string();
+        const std::string message = result.success
+            ? std::string(destination_utf8.begin(), destination_utf8.end())
+            : result.error;
+        std::printf("Staging %s: %s\n", result.success ? "VERIFIED" : "FAILED", message.c_str());
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Staging failed: %s\n", error.what());
     }

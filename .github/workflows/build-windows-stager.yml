@@ -1,0 +1,166 @@
+name: Windows game stager
+
+# Builds theft4_stage.exe (ios/tools/windows-stage) so a Windows PC can prepare
+# the game folder that the iOS app imports. Uses no secrets and no game data;
+# the smoke tests only exercise argument and input rejection. The artifact
+# holds only the program and its SHA-256 file, not aes_key.bin.
+
+on:
+  push:
+    branches: [m3-ipad-fixes]
+    paths:
+      - '.github/workflows/build-windows-stager.yml'
+      - 'ios/tools/**'
+      - 'glue/rexglue-sdk-main/gta4-recomp/src/install/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-stager-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CMake 4 rejects some pinned dependencies' old cmake_minimum_required values
+  # without this floor (the same setting as the iOS workflow).
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+
+jobs:
+  stager:
+    name: Build theft4_stage.exe
+    runs-on: windows-2025
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install CMake
+        run: python -m pip install "cmake>=3.29,<5" ninja
+
+      - name: Prepare pinned dependencies and patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          # Some pinned dependencies exceed the default 260-character path limit.
+          git config --global core.longpaths true
+          python tools/setup_repo.py --jobs 8 2>&1 | tee "$RUNNER_TEMP/logs/setup.log"
+
+      - name: Install static zlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install zlib:x64-windows-static 2>&1 | tee "$RUNNER_TEMP/logs/zlib.log"
+
+      - name: Build theft4_stage
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          clang++ --version || exit /b 1
+          cmake -S ios/tools/windows-stage -B out/windows-stage -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ^
+            "-DZLIB_ROOT=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows-static" ^
+            > "%RUNNER_TEMP%\logs\configure.log" 2>&1
+          if errorlevel 1 (type "%RUNNER_TEMP%\logs\configure.log" & exit /b 1)
+          cmake --build out/windows-stage --target theft4_stage --parallel 4 ^
+            > "%RUNNER_TEMP%\logs\build.log" 2>&1
+          if errorlevel 1 (type "%RUNNER_TEMP%\logs\build.log" & exit /b 1)
+          exit /b 0
+
+      - name: Smoke-test and audit theft4_stage
+        shell: pwsh
+        run: |
+          # Continue: the checks read native stderr, and every failure throws.
+          $ErrorActionPreference = 'Continue'
+          $exe = Get-ChildItem out/windows-stage -Recurse -Filter theft4_stage.exe | Select-Object -First 1
+          if (-not $exe) { throw 'theft4_stage.exe was not built' }
+          $work = Join-Path $env:RUNNER_TEMP 'stage-smoke'
+          New-Item -ItemType Directory -Force $work | Out-Null
+
+          # Wrong argument count: usage and status 2.
+          $output = & $exe.FullName 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 2 -or $output -notmatch 'Usage: theft4_stage') {
+            throw "Usage check failed ($LASTEXITCODE): $output"
+          }
+
+          # Existing destination: refused before any work, status 2.
+          $existing = Join-Path $work 'existing'
+          New-Item -ItemType Directory $existing | Out-Null
+          $output = & $exe.FullName (Join-Path $work 'none.iso') (Join-Path $work 'none.xexp') $existing 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 2 -or $output -notmatch 'must be a new directory') {
+            throw "Existing-destination check failed ($LASTEXITCODE): $output"
+          }
+
+          # Missing inputs into a new destination: the installer runs and
+          # reports a failure (status 1) instead of crashing.
+          $fresh = Join-Path $work 'fresh'
+          $output = & $exe.FullName (Join-Path $work 'none.iso') (Join-Path $work 'none.xexp') $fresh 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 1 -or $output -notmatch 'Staging FAILED') {
+            throw "Missing-input check failed ($LASTEXITCODE): $output"
+          }
+          if (-not (Test-Path $fresh -PathType Container)) { throw 'The new destination was not created' }
+          Write-Output "Missing-input result: $($output.Trim() -split "`n" | Select-Object -Last 1)"
+
+          # Standalone: no Visual C++ runtime or zlib DLLs are needed.
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+            Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1
+          $dependents = & $dumpbin.FullName /nologo /dependents $exe.FullName | Out-String
+          Write-Output $dependents
+          if ($dependents -match '(?i)(vcruntime|msvcp|ucrtbase|api-ms-win-crt|zlib)[^\s]*\.dll') {
+            throw "theft4_stage.exe depends on a runtime DLL: $($Matches[0])"
+          }
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $exe.FullName dist/theft4_stage.exe
+          $hash = (Get-FileHash dist/theft4_stage.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  theft4_stage.exe" | Set-Content -NoNewline -Encoding ascii dist/theft4_stage.exe.sha256
+          $size = (Get-Item dist/theft4_stage.exe).Length
+          Write-Output "::notice title=Stager summary::theft4_stage.exe bytes=$size sha256=$hash source=${env:GITHUB_SHA}"
+
+      - name: Publish failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          logs = sorted(pathlib.Path(os.environ['RUNNER_TEMP'], 'logs').glob('*.log'),
+                        key=lambda p: p.stat().st_mtime)
+          if not logs:
+              raise SystemExit(0)
+          log = logs[-1]  # the most recently written log is the failing step's
+          lines = [l.rstrip()[:300] for l in log.read_text(errors='replace').splitlines()]
+          pattern = re.compile(r'error[: ]|fatal|failed|not found|No such file|undefined|unresolved',
+                               re.IGNORECASE)
+          errors = [l for l in lines if pattern.search(l) and not l.lstrip().startswith('warning')]
+          def emit(title, chunk):
+              text = '\n'.join(chunk).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title={title}::{text}', flush=True)
+          for index in range(0, min(len(errors), 120), 40):
+              emit(f'{log.stem} errors {index // 40 + 1}', errors[-120:][index:index + 40])
+          tail = lines[-160:]
+          for index in range(0, len(tail), 40):
+              emit(f'{log.stem} tail {index // 40 + 1}', tail[index:index + 40])
+          PY
+
+      - name: Upload theft4_stage.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: theft4_stage-windows-x64-${{ github.sha }}
+          path: |
+            dist/theft4_stage.exe
+            dist/theft4_stage.exe.sha256
+          if-no-files-found: error
+          retention-days: 7

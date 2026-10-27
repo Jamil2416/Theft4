@@ -416,6 +416,10 @@ bool CheckedAdd(uint64_t value, uint64_t& total) {
 std::optional<std::filesystem::path> FindRpfAesKey() {
   const std::array candidates = {
       rex::filesystem::GetExecutableFolder().parent_path() / "Resources" / "aes_key.bin",
+#if defined(_WIN32)
+      // The standalone Windows stager has no bundle; its key sits beside it.
+      rex::filesystem::GetExecutableFolder() / "aes_key.bin",
+#endif
       std::filesystem::path(GTA4_RPF_AES_KEY_SOURCE),
   };
   for (const auto& candidate : candidates) {
