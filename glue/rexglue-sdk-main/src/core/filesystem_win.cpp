@@ -43,9 +43,20 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
-  wchar_t* path;
-  auto error = _get_wpgmptr(&path);
-  return !error ? std::filesystem::path(path) : std::filesystem::path();
+  // _get_wpgmptr only works in wmain programs; under a narrow main() the CRT
+  // reports an invalid parameter and fail-fasts. The module path works for both.
+  std::wstring path(MAX_PATH, L'\0');
+  while (true) {
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0) {
+      return {};
+    }
+    if (length < path.size()) {
+      path.resize(length);
+      return std::filesystem::path(path);
+    }
+    path.resize(path.size() * 2);
+  }
 }
 
 std::filesystem::path GetExecutableFolder() {

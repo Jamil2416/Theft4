@@ -12,6 +12,8 @@ on:
       - '.github/workflows/build-windows-stager.yml'
       - 'ios/tools/**'
       - 'glue/rexglue-sdk-main/gta4-recomp/src/install/**'
+      - 'glue/rexglue-sdk-main/src/core/**'
+      - 'glue/rexglue-sdk-main/src/filesystem/**'
   workflow_dispatch:
 
 permissions:
