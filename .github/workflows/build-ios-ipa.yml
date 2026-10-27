@@ -201,7 +201,28 @@ jobs:
             echo "::error::Local build path found in the executable"
             echo "$local_paths" | head -5; exit 1
           fi
-          echo "Metal libraries: $(find "$app" -name '*.metallib' | wc -l)"
+          # Every compiled game and host shader library must be in the bundle.
+          bundled="$(find "$app" -name '*.metallib' | wc -l | tr -d ' ')"
+          compiled="$(python3 -c "import json; print(sum(json.load(open(p))['compiled'] for p in ('out/direct-metal/ios/COMPILATION.json', 'out/direct-metal/ios/Host/COMPILATION.json')))")"
+          if (( bundled < compiled )); then
+            echo "::error::Only $bundled of $compiled compiled Metal libraries are bundled"; exit 1
+          fi
+          # Public summary (run logs need sign-in): identity, hashes, sizes,
+          # signing and shader counts, for checking the artifact remotely.
+          # Summary lookups must not fail the audit; the gates above do that.
+          plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null || echo missing; }
+          summary="bundle=$(plist CFBundleIdentifier) version=$(plist CFBundleShortVersionString)"
+          summary+=" build=$(plist CFBundleVersion) source=$(plist Theft4SourceRevision)"
+          summary+=" minimum_os=$(plist MinimumOSVersion)"
+          summary+="; $(lipo -info "$app/Theft4" | sed 's/.*: //')"
+          summary+="; ipa_bytes=$(stat -f %z "$ipa") $(cat "$ipa.sha256")"
+          summary+="; executable_bytes=$(stat -f %z "$app/Theft4")"
+          summary+="; metallibs bundled=$bundled compiled=$compiled"
+          summary+="; entitlements=$( { echo "$entitlements" | grep -o '<key>[^<]*</key>' || true; } | sed 's/<[^>]*>//g' | tr '\n' ' ')"
+          summary+="; $( { echo "$signature" | grep -E '^(Signature|TeamIdentifier)=' || true; } | tr '\n' ' ')"
+          summary+="; moltenvk_archives=$(find "$THEFT4_MOLTENVK_IOS_LIB_DIR" -maxdepth 1 -name '*.a' | wc -l | tr -d ' ')"
+          echo "$summary"
+          echo "::notice title=IPA summary::$summary"
 
       # Run logs need a signed-in viewer; check-run annotations are public.
       # Publish the failing step's error lines and log tail as annotations so

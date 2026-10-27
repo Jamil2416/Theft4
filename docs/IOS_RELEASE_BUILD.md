@@ -109,8 +109,8 @@ The packager ad-hoc signs the staged app with
 `com.apple.developer.kernel.increased-memory-limit`. Sideloading tools read the
 requested entitlements from that signature; a signature-free IPA cannot ask
 for them. The ad-hoc signature has no team, device or provisioning metadata,
-and the packager fails if one appears. 8 GiB devices such as the M3 iPad Air
-need this headroom; whether it applies depends on the signing tool (AltStore
+and the packager fails if one appears. The headroom matters most on 8 GiB
+devices such as the M3 iPad Air; whether it applies depends on the signing tool (AltStore
 2.2 or later grants it to free accounts). Compare **Available process memory
 at export** in **System → Download Latest Log Capture** to confirm it.
 `THEFT4_IPA_INCREASED_MEMORY=0` restores the previous signature-free package.

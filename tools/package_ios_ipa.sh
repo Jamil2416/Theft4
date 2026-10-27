@@ -110,7 +110,7 @@ fi
 
 # Sideloading tools read the entitlements to request from the executable's
 # signature, so a signature-free IPA cannot ask for the increased memory limit
-# that 8 GiB devices need. An ad-hoc signature carries that request without
+# that matters most on 8 GiB devices. An ad-hoc signature carries it without
 # team, device or provisioning metadata; the user's tool still re-signs it.
 # THEFT4_IPA_INCREASED_MEMORY=0 restores the previous signature-free package.
 signing_summary="removed; the user's sideloading tool must re-sign the app"
