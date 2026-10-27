@@ -3,7 +3,8 @@ set -euo pipefail
 
 usage() {
   print -u2 "Usage: $0 /path/to/Theft4.app [output-directory]"
-  print -u2 "Creates a sideload-ready, unsigned IPA and SHA-256 checksum."
+  print -u2 "Creates a sideload-ready IPA (ad-hoc signed, no developer identity) and SHA-256 checksum."
+  print -u2 "Set THEFT4_IPA_INCREASED_MEMORY=0 for a signature-free IPA."
 }
 
 if (( $# < 1 || $# > 2 )); then
@@ -100,11 +101,52 @@ if [[ -e "$staged_app/_CodeSignature" || -e "$staged_app/embedded.mobileprovisio
 fi
 
 # Avoid publishing Finder quarantine/resource-fork metadata as __MACOSX
-# entries. None of it is part of the iOS application payload.
+# entries. None of it is part of the iOS application payload. This runs before
+# any ad-hoc signing so the signature seals the final file set.
 /usr/bin/xattr -cr "$staged_app"
 # Imported AppleDouble sidecars are ordinary files, so xattr clearing alone
 # cannot remove them. They are metadata, never iOS application resources.
 /usr/bin/find "$staged_app" -type f -name '._*' -delete
+
+# Sideloading tools read the entitlements to request from the executable's
+# signature, so a signature-free IPA cannot ask for the increased memory limit
+# that 8 GiB devices need. An ad-hoc signature carries that request without
+# team, device or provisioning metadata; the user's tool still re-signs it.
+# THEFT4_IPA_INCREASED_MEMORY=0 restores the previous signature-free package.
+signing_summary="removed; the user's sideloading tool must re-sign the app"
+if [[ "${THEFT4_IPA_INCREASED_MEMORY:-1}" != 0 ]]; then
+  entitlements="${0:A:h:h}/ios/Theft4/Theft4Sideload.entitlements"
+  if [[ ! -f "$entitlements" ]]; then
+    print -u2 "Missing sideload entitlements: $entitlements"
+    exit 66
+  fi
+  # Nested code must be signed before its enclosing bundle; -depth visits the
+  # innermost items first. Only the main executable requests entitlements.
+  /usr/bin/find "$staged_app" -depth -mindepth 1 \( -name '*.framework' -o \
+    -name '*.dylib' -o -name '*.appex' \) -print0 |
+    while IFS= read -r -d '' nested; do
+      /usr/bin/codesign --force --sign - "$nested"
+    done
+  /usr/bin/codesign --force --sign - --entitlements "$entitlements" \
+    --generate-entitlement-der "$staged_app"
+  # Capture before matching: grep -q can close the pipe early, and pipefail
+  # would then report codesign's SIGPIPE as a failed check.
+  signed_entitlements="$(/usr/bin/codesign -d --entitlements - --xml "$staged_app" 2>/dev/null || true)"
+  if [[ "$signed_entitlements" != *com.apple.developer.kernel.increased-memory-limit* ]]; then
+    print -u2 "The ad-hoc signature does not carry the increased memory limit request."
+    exit 70
+  fi
+  signature_details="$(/usr/bin/codesign -dv "$staged_app" 2>&1 || true)"
+  if [[ "$signature_details" != *$'\n'TeamIdentifier=not\ set* ]]; then
+    print -u2 "The staged app signature unexpectedly names a development team."
+    exit 70
+  fi
+  if [[ -e "$staged_app/embedded.mobileprovision" ]]; then
+    print -u2 "Ad-hoc signing unexpectedly added a provisioning profile."
+    exit 70
+  fi
+  signing_summary="ad-hoc, requests increased-memory-limit; the user's sideloading tool must re-sign the app"
+fi
 
 (
   cd "$stage_root"
@@ -130,4 +172,4 @@ print "  App:        $bundle_identifier $version ($build_version)"
 print "  Architect:  $architectures"
 print "  IPA:        $ipa_path"
 print "  SHA-256:    $checksum"
-print "  Signing:    removed; the user's sideloading tool must re-sign the app"
+print "  Signing:    $signing_summary"

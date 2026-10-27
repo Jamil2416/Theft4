@@ -88,7 +88,7 @@ Close an existing game safely first; update the app in place. Never delete its
 container to install a performance candidate. Do not use automatic Play flags
 when installing or verifying a launcher-only update.
 
-## Prepare a public unsigned sideload package
+## Prepare a public sideload package
 
 ```sh
 THEFT4_MOLTENVK_IOS_LIB_DIR=/absolute/path/to/ios-release-libraries \
@@ -100,9 +100,20 @@ the supplied offline shaders, disables private game-asset draw capture, applies
 public source-prefix maps, verifies real `-O3 -DNDEBUG` compiler arguments and
 runs the existing IPA privacy/architecture audit. It disables development signing
 and packages under `dist/`; it does not publish a GitHub or TestFlight release.
-The resulting unsigned IPA must be re-signed by the recipient's sideloading tool.
+The resulting IPA must be re-signed by the recipient's sideloading tool.
 Public signing/entitlement behavior is a separate validation from the M5's local
 Apple Development profile.
+
+The packager ad-hoc signs the staged app with
+`ios/Theft4/Theft4Sideload.entitlements`, which requests
+`com.apple.developer.kernel.increased-memory-limit`. Sideloading tools read the
+requested entitlements from that signature; a signature-free IPA cannot ask
+for them. The ad-hoc signature has no team, device or provisioning metadata,
+and the packager fails if one appears. 8 GiB devices such as the M3 iPad Air
+need this headroom; whether it applies depends on the signing tool (AltStore
+2.2 or later grants it to free accounts). Compare **Available process memory
+at export** in **System → Download Latest Log Capture** to confirm it.
+`THEFT4_IPA_INCREASED_MEMORY=0` restores the previous signature-free package.
 
 The build entry points record the source commit in `Theft4SourceRevision`.
 A clean source checkpoint, exact bundle version, required shader assets and

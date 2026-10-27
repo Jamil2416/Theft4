@@ -5,11 +5,13 @@
 
 // M-series iPads start at 8 GiB. Earlier iPads top out at 6 GiB, so the
 // memory tier is a more durable compatibility signal than maintaining a list
-// of every iPad hardware identifier.
+// of every iPad hardware identifier. iOS reports less than the marketed
+// capacity (a 6 GiB device reports about 5.5 GiB), so an 8 GiB M-series iPad
+// reports below 8 GiB; split the tiers at 7 GiB, as the iPhone band does.
 static inline bool theft4_is_legacy_ipad(bool is_ipad,
                                          uint64_t physical_memory_bytes) {
     return is_ipad && physical_memory_bytes > 0 &&
-           physical_memory_bytes < (UINT64_C(8) << 30);
+           physical_memory_bytes < (UINT64_C(7) << 30);
 }
 
 // iOS reports slightly less than the marketed RAM capacity. Treat the

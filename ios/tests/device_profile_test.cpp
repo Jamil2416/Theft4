@@ -9,6 +9,11 @@ int main() {
     assert(theft4_is_legacy_ipad(true, 4 * GiB));
     assert(theft4_is_legacy_ipad(true, 6 * GiB));
     assert(!theft4_is_legacy_ipad(true, 8 * GiB));
+    // Reported capacity is below the marketed size: 6 GiB iPads stay legacy,
+    // 8 GiB M-series iPads (for example the M3 iPad Air) do not.
+    assert(theft4_is_legacy_ipad(true, 5662 * MiB));
+    assert(!theft4_is_legacy_ipad(true, 7 * GiB));
+    assert(!theft4_is_legacy_ipad(true, 7680 * MiB));
     assert(!theft4_is_legacy_ipad(false, 4 * GiB));
     assert(!theft4_is_legacy_ipad(true, 0));
     assert(theft4_is_6gb_iphone(false, 6 * GiB));
@@ -19,6 +24,8 @@ int main() {
     assert(std::strcmp(theft4_device_profile_name(true, 4 * GiB, false),
                        "legacy-ipad") == 0);
     assert(std::strcmp(theft4_device_profile_name(true, 8 * GiB, false),
+                       "ipad") == 0);
+    assert(std::strcmp(theft4_device_profile_name(true, 7680 * MiB, false),
                        "ipad") == 0);
     assert(std::strcmp(theft4_device_profile_name(false, 6 * GiB, false),
                        "iphone-6gb") == 0);

@@ -5,6 +5,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <os/log.h>
+#include <os/proc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2230,6 +2231,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSString *systemVersion = UIDevice.currentDevice.systemVersion ?: @"unknown";
     NSString *deviceName = UIDevice.currentDevice.model ?: @"unknown";
     uint64_t physicalMemory = NSProcessInfo.processInfo.physicalMemory;
+    // Remaining allocation headroom under this process's jetsam limit. Read
+    // from the launcher, it shows whether the increased memory limit applies.
+    uint64_t availableMemory = os_proc_available_memory();
     const char *machineCString = getenv("THEFT4_DEVICE_MODEL");
     NSString *machine = machineCString ? [NSString stringWithUTF8String:machineCString] : nil;
     if (!machine.length) {
@@ -2285,6 +2289,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
              "Device: %@ / %@\n"
              "iOS/iPadOS: %@\n"
              "Physical memory: %llu MiB\n"
+             "Available process memory at export: %llu MiB\n"
              "Theft4 device profile: %@\n"
              "Lightweight capture switch at export: %@\n"
              "Frame counter enabled: %@\n"
@@ -2296,7 +2301,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
              "This is a bounded text bundle. Native performance CSV/JSON artifacts are included below when available.\n",
             [NSDate date], Theft4DisplayName(), version, build,
             NSBundle.mainBundle.bundleIdentifier ?: @"unknown", deviceName, machine,
-            systemVersion, (unsigned long long)(physicalMemory >> 20), profile,
+            systemVersion, (unsigned long long)(physicalMemory >> 20),
+            (unsigned long long)(availableMemory >> 20), profile,
             performanceCapture ? @"ON" : @"OFF", showFPS ? @"ON" : @"OFF",
             anisotropy ? @"ON" : @"OFF", enhancedOutput ? @"ON" : @"OFF",
             fsrBoost ? @"ON" : @"OFF", motionBlur ? @"ON" : @"OFF",
