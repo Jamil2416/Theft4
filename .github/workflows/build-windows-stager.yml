@@ -60,7 +60,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install zlib:x64-windows-static 2>&1 | tee "$RUNNER_TEMP/logs/zlib.log"
+          # --classic: the repository's own vcpkg.json would otherwise put
+          # vcpkg in manifest mode, which rejects a single-package install.
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --classic zlib:x64-windows-static 2>&1 | tee "$RUNNER_TEMP/logs/zlib.log"
 
       - name: Build theft4_stage
         shell: cmd
