@@ -22,6 +22,9 @@ int theft4_validate_base_game(const char* game_directory, char* message,
 // Validates an already-installed base/TU8 pair without writing to it.
 int theft4_validate_installed_game(const char* game_directory, char* message,
                                    size_t message_capacity);
+// 1 when The Ballad of Gay Tony is complete in Documents/dlc/TBOGT and the
+// runtime will offer it to the game (every episode folder there is complete).
+int theft4_tbogt_ready(const char* game_directory);
 int theft4_prepare_game(const char* game_directory, const char* support_directory,
                        theft4_boot_event_fn event, void* context);
 // Experimental one-shot execution. Call off the main thread after diagnostics

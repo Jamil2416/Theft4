@@ -90,6 +90,9 @@ extern "C" void gta4_transition_hooks_link_anchor();
 extern "C" void gta4_fault_probe_hooks_link_anchor();
 extern "C" void theft4_ios_audio_hotpaths_link_anchor();
 extern "C" void theft4_intro_configure(bool enabled);
+extern "C" void theft4_episode_start_configure(int32_t content_id);
+// TBoGT's episode entry in its setup2.xml: <id>4</id>.
+constexpr int32_t kTbogtContentId = 4;
 
 namespace {
 // This bring-up entry is deliberately one-shot per process. A runtime owns
@@ -249,6 +252,16 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         const bool skip_intro = !skip_intro_value || std::string_view(skip_intro_value) == "1";
         theft4_intro_configure(skip_intro);
         REXLOG_INFO("Theft4 skip intro: {} (startup initialization retained)", skip_intro);
+        // Launcher buttons: "base" (Enter Liberty City) goes to the normal
+        // title; "tbogt" (Start the Ballad) opens the game's own TBoGT start
+        // screen. Unset keeps the retail new-episode prompt.
+        const char* episode_value = std::getenv("THEFT4_START_EPISODE");
+        const std::string_view episode = episode_value ? episode_value : "";
+        if (!episode.empty() && episode != "base" && episode != "tbogt")
+            throw std::runtime_error("THEFT4_START_EPISODE must be base or tbogt");
+        theft4_episode_start_configure(episode == "tbogt" ? kTbogtContentId
+                                       : episode == "base" ? -1 : -2);
+        REXLOG_INFO("Theft4 start episode: {}", episode.empty() ? "retail" : episode);
         const int motion_blur = theft4::motion_blur::ParseSetting(std::getenv("THEFT4_MOTION_BLUR"));
         if (motion_blur < 0)
             throw std::runtime_error("THEFT4_MOTION_BLUR must be 0 or 1");

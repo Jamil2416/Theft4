@@ -489,6 +489,7 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     BOOL _loading;
     UIButton *_prepare;
     UIButton *_start;
+    UIButton *_ballad;
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
     NSLayoutConstraint *_gameAspectConstraint;
@@ -581,6 +582,11 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)startGamePreparation:(NSURL *)game;
 - (void)prepareTransferredGame;
 - (void)startTransferredGame;
+- (void)enterLibertyCity;
+- (void)startTheBallad;
+- (NSString *)tbogtUnavailableReason;
+- (BOOL)canStartFromLauncher;
+- (void)refreshEpisodeAvailability;
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
@@ -803,7 +809,9 @@ static void bootEvent(void *context, const char *event) {
     ]];
     _status = _bringupOverlay.statusLabel; _detail = _bringupOverlay.detailLabel;
     _start = _bringupOverlay.startButton; _prepare = _bringupOverlay.prepareButton;
-    [_start addTarget:self action:@selector(startTransferredGame) forControlEvents:UIControlEventTouchUpInside];
+    _ballad = _bringupOverlay.balladButton;
+    [_start addTarget:self action:@selector(enterLibertyCity) forControlEvents:UIControlEventTouchUpInside];
+    [_ballad addTarget:self action:@selector(startTheBallad) forControlEvents:UIControlEventTouchUpInside];
     [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.lowPowerButton addTarget:self action:@selector(applyLowPowerPreset)
@@ -812,6 +820,7 @@ static void bootEvent(void *context, const char *event) {
         forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
+    _ballad.hidden = YES;
 #endif
     _showCPUUsage = _bringupOverlay.showCPUUsage;
     _showFrameTime = _bringupOverlay.showFrameTime;
@@ -1116,6 +1125,7 @@ static void bootEvent(void *context, const char *event) {
     }
 
     [_gameURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+    [self refreshEpisodeAvailability];
     BOOL hasBase = [NSFileManager.defaultManager
         fileExistsAtPath:[[_gameURL URLByAppendingPathComponent:@"default.xex"] path]];
     _bootStatus = hasBase ? @"Game files detected. Checking the installed update is required."
@@ -2677,6 +2687,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (!_launcherDuringGame) return;
     _launcherDuringGame = NO;
     _start.enabled = NO;
+    _ballad.enabled = NO;
     _bringupOverlay.userInteractionEnabled = NO;
     _bringupOverlay.hidden = YES;
     _bringupOverlay.alpha = 0.0;
@@ -3175,6 +3186,50 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self startGamePreparation:game execute:NO];
 }
 
+// Enter Liberty City always opens GTA IV's normal title; Start the Ballad
+// opens the game's own TBoGT start screen. The choice reaches the runtime as
+// THEFT4_START_EPISODE and survives a texture-preparation detour.
+- (void)enterLibertyCity {
+    setenv("THEFT4_START_EPISODE", "base", 1);
+    [self record:@"ui.start_episode_base"];
+    [self startTransferredGame];
+}
+
+- (void)startTheBallad {
+    if (![self tbogtUnavailableReason]) {
+        setenv("THEFT4_START_EPISODE", "tbogt", 1);
+        [self record:@"ui.start_episode_tbogt"];
+        [self startTransferredGame];
+    }
+}
+
+// nil when The Ballad of Gay Tony can start; otherwise a short reason.
+- (NSString *)tbogtUnavailableReason {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    if (!_gameURL || !theft4_tbogt_ready(_gameURL.fileSystemRepresentation))
+        return @"To play The Ballad of Gay Tony, copy it to Documents/dlc/TBOGT next to the game folder.";
+#ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
+    // Texture preparation covers only the base game so far.
+    if (_astcConversion.on)
+        return @"The Ballad of Gay Tony is installed, but this device needs texture preparation that does not cover episodes yet.";
+#endif
+    return nil;
+#else
+    return @"This build cannot start the game.";
+#endif
+}
+
+// File menu mirrors of the two launcher starts.
+- (BOOL)canStartFromLauncher {
+    return !_start.hidden && _start.enabled && !_executionAttempted;
+}
+
+- (void)refreshEpisodeAvailability {
+    NSString *reason = [self tbogtUnavailableReason];
+    _ballad.enabled = _start.enabled && !reason;
+    [_bringupOverlay setEpisodeStatus:reason ?: @"The Ballad of Gay Tony is installed. Start the Ballad opens its start screen."];
+}
+
 - (void)startTransferredGame {
     if (_launcherDuringGame) {
         [self resumeGameFromLauncher];
@@ -3328,6 +3383,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _loading = YES;
     _prepare.enabled = NO;
     _start.enabled = NO;
+    _ballad.enabled = NO;
     if (execute) _executionAttempted = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Retain the controller through completion; all UIKit/core callbacks
@@ -3345,6 +3401,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             self->_loading = NO;
             self->_prepare.enabled = !self->_executionAttempted;
             self->_start.enabled = !self->_executionAttempted;
+            [self refreshEpisodeAvailability];
             [self record:execute ? @"boot.execution_attempt_returned" :
                 (result == 0 ? @"boot.preparation_completed" : @"boot.preparation_failed")];
         });
@@ -3378,6 +3435,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             [NSString stringWithFormat:@"marker,,%llu,,app-active\n", (unsigned long long)now]]; });
     }
     [_bringupOverlay setActive:!_executionAttempted];
+    // Episodes may have been copied in Files while the app was in the background.
+    [self refreshEpisodeAvailability];
     _sceneActive = YES;
     [self updateFrameTimeHUD];
     _touchControls.active = _gamePresentation && !_launcherDuringGame && _showControls.on;
@@ -3520,10 +3579,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)buildMenuWithBuilder:(id<UIMenuBuilder>)builder {
     [super buildMenuWithBuilder:builder];
     if (builder.system != UIMenuSystem.mainSystem) return;
+    UICommand *enter = [UICommand commandWithTitle:@"Enter Liberty City" image:nil
+        action:@selector(enterLibertyCityCommand:) propertyList:nil];
+    UICommand *ballad = [UICommand commandWithTitle:@"Start the Ballad" image:nil
+        action:@selector(startTheBalladCommand:) propertyList:nil];
+    [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.start"
+        options:UIMenuOptionsDisplayInline children:@[enter, ballad]] atStartOfMenuForIdentifier:UIMenuFile];
     UICommand *capture = [UICommand commandWithTitle:@"Start 30-Second Capture" image:nil
         action:@selector(startThirtySecondCapture:) propertyList:nil];
     [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.capture"
         options:UIMenuOptionsDisplayInline children:@[capture]] atEndOfMenuForIdentifier:UIMenuFile];
+}
+
+- (void)enterLibertyCityCommand:(__unused UICommand *)command {
+    Theft4ViewController *controller = [self activeGameController];
+    if ([controller canStartFromLauncher]) [controller enterLibertyCity];
+}
+
+- (void)startTheBalladCommand:(__unused UICommand *)command {
+    Theft4ViewController *controller = [self activeGameController];
+    if ([controller canStartFromLauncher]) [controller startTheBallad];
 }
 
 - (Theft4ViewController *)activeGameController {
@@ -3542,8 +3617,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)validateCommand:(UICommand *)command {
     [super validateCommand:command];
-    if (command.action != @selector(startThirtySecondCapture:)) return;
     Theft4ViewController *controller = [self activeGameController];
+    if (command.action == @selector(enterLibertyCityCommand:) ||
+        command.action == @selector(startTheBalladCommand:)) {
+        const BOOL ballad = command.action == @selector(startTheBalladCommand:);
+        const BOOL available = [controller canStartFromLauncher] &&
+            (!ballad || ![controller tbogtUnavailableReason]);
+        command.attributes = available ? 0 : UIMenuElementAttributesDisabled;
+        return;
+    }
+    if (command.action != @selector(startThirtySecondCapture:)) return;
     NSString *reason = controller ? [controller timedCaptureUnavailableReason] : @"Start the game first";
     command.discoverabilityTitle = reason;
     command.attributes = reason ? UIMenuElementAttributesDisabled : 0;

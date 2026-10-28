@@ -115,7 +115,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UIScrollView *_scroll, *_navigationScroll;
     UIStackView *_content, *_navigation;
     UIStackView *_play, *_graphics, *_interfacePage, *_system, *_mods;
-    UILabel *_playHeadline, *_playIntro, *_playSaveNote;
+    UILabel *_playHeadline, *_playIntro, *_playSaveNote, *_episodeStatus;
     NSArray<UIButton *> *_tabs;
     NSArray<UIView *> *_pages;
     BOOL _active, _retired, _portraitMenu, _landscapePhoneMenu;
@@ -245,8 +245,25 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _playIntro = Copy(@"Cross the river. Take the long way home.\nYour next story starts on these streets.", 15, NO);
     _startButton = Action(@"ENTER LIBERTY CITY", YES);
     _startButton.accessibilityIdentifier = @"game.start";
+    _balladButton = Action(@"START THE BALLAD", YES);
+    _balladButton.accessibilityIdentifier = @"game.start.tbogt";
+    _balladButton.accessibilityLabel = @"Start The Ballad of Gay Tony";
+    _balladButton.enabled = NO;
+    // The custom background keeps its color when disabled; dim the button
+    // so an unavailable episode reads as unavailable.
+    _balladButton.configurationUpdateHandler = ^(UIButton *button) {
+        button.alpha = button.enabled ? 1.0 : 0.45;
+    };
+    // The two starts split the width the single start button used to take.
+    UIStackView *startRow = [[UIStackView alloc] initWithArrangedSubviews:@[_startButton, _balladButton]];
+    startRow.axis = UILayoutConstraintAxisHorizontal;
+    startRow.distribution = UIStackViewDistributionFillEqually;
+    startRow.alignment = UIStackViewAlignmentFill;
+    startRow.spacing = 12;
+    _episodeStatus = Copy(@"", 12, NO);
+    _episodeStatus.hidden = YES;
     _playSaveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
-    _play = Column(@[_playHeadline, _playIntro, _startButton, _playSaveNote], 22);
+    _play = Column(@[_playHeadline, _playIntro, startRow, _episodeStatus, _playSaveNote], 22);
 
     _showCPUUsage = [UISwitch new];
     _showFrameTime = [UISwitch new];
@@ -680,6 +697,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     [coordinator addCoordinatedAnimations:^{ [self updateTabAppearance]; } completion:nil];
 }
 
+- (void)setEpisodeStatus:(NSString *)text {
+    _episodeStatus.text = text;
+    _episodeStatus.hidden = _landscapePhoneMenu || !text.length;
+}
+
 - (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments {
     return _startButton.enabled ? @[_startButton] : @[_tabs[0]];
 }
@@ -763,6 +785,16 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
                              weight:UIFontWeightSemibold]];
         _playIntro.hidden = landscapePhoneMenu;
         _playSaveNote.hidden = landscapePhoneMenu;
+        _episodeStatus.hidden = landscapePhoneMenu || !_episodeStatus.text.length;
+        // Two starts share one row; on a portrait phone drop their icons so
+        // each title keeps its width.
+        for (UIButton *start in @[_startButton, _balladButton]) {
+            UIButtonConfiguration *config = start.configuration;
+            config.image = portraitMenu ? nil : [UIImage systemImageNamed:@"play.fill"];
+            config.contentInsets = portraitMenu ? NSDirectionalEdgeInsetsMake(15, 12, 15, 12)
+                                                : NSDirectionalEdgeInsetsMake(17, 18, 17, 18);
+            start.configuration = config;
+        }
         _play.spacing = landscapePhoneMenu ? 12 : portraitMenu ? 16 : 22;
     }
 

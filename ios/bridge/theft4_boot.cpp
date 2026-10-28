@@ -82,6 +82,18 @@ int theft4_validate_installed_game(const char* game_directory, char* message,
     }
 }
 
+int theft4_tbogt_ready(const char* game_directory) {
+    if (!game_directory) return 0;
+    try {
+        const std::filesystem::path game(game_directory);
+        const auto root = theft4::ResolveMarketplaceRoot(game, {});
+        return root.path == theft4::EpisodeFolder(game) &&
+               gta4::install::IsEpisodeReady(root.path, gta4::install::Episode::kTbogt) ? 1 : 0;
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 int theft4_configure_boot_diagnostics(void) {
     if (theft4_retail_mode()) return rex::diagnostics::Configure(false, "") ? 0 : 1;
     const char* enabled = std::getenv("THEFT4_DIAGNOSTICS");

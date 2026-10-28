@@ -5,6 +5,11 @@
 @property(nonatomic, readonly) UILabel *statusLabel;
 @property(nonatomic, readonly) UILabel *detailLabel;
 @property(nonatomic, readonly) UIButton *startButton;
+// Shares the start button's row: boots into The Ballad of Gay Tony.
+@property(nonatomic, readonly) UIButton *balladButton;
+// Under the start row: whether TBoGT is installed and how to add it. Empty
+// text hides the line.
+- (void)setEpisodeStatus:(NSString *)text;
 @property(nonatomic, readonly) UIButton *prepareButton;
 @property(nonatomic, readonly) UIButton *restartButton;
 @property(nonatomic, readonly) UISwitch *showCPUUsage;
