@@ -24,23 +24,28 @@ concurrency:
   group: build-ios-ipa-${{ github.ref }}
   cancel-in-progress: true
 
+# Both jobs use the same Xcode, named by its versioned path so a change of
+# the images' default Xcode cannot make them differ: Xcode 26.6 with the
+# iOS 26.5 SDK is on both the Apple silicon and the Intel macOS 26 images.
 jobs:
   macos26:
-    name: macOS 26 (Xcode 26.6)
+    name: macOS 26 Apple silicon (Xcode 26.6)
     uses: ./.github/workflows/build-ios-ipa-build.yml
     with:
       runner: macos-26
-      xcode: /Applications/Xcode.app
+      xcode: /Applications/Xcode_26.6.app
 
-  # When GitHub has no macOS 26 machine to give (the job is dropped after
-  # about 15 minutes in the queue), build on macOS 15 with its newest
-  # Xcode 26 instead. It does not run when the macOS 26 build started and
-  # failed, or when the run was cancelled.
-  macos15-fallback:
-    name: macOS 15 fallback (Xcode 26.3)
+  # When GitHub has no Apple silicon macOS 26 machine to give (the job is
+  # dropped after about 15 minutes in the queue), build on an Intel macOS 26
+  # machine, a separate pool, with the same Xcode. The app is cross-compiled
+  # for arm64 either way; only the build machine differs, and it is slower.
+  # It does not run when the first build started and failed, or when the run
+  # was cancelled.
+  macos26-intel-fallback:
+    name: macOS 26 Intel fallback (Xcode 26.6)
     needs: macos26
     if: ${{ !cancelled() && needs.macos26.outputs.started != 'true' }}
     uses: ./.github/workflows/build-ios-ipa-build.yml
     with:
-      runner: macos-15
-      xcode: /Applications/Xcode_26.3.app
+      runner: macos-26-intel
+      xcode: /Applications/Xcode_26.6.app
