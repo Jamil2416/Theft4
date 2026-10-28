@@ -400,6 +400,8 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         # separate __imp__ originals specifically for these strong wrappers.
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_transition_hooks.cpp"
         bridge/theft4_intro_hooks.cpp
+        # In-game trainer: wraps script-command registration and WAIT.
+        bridge/theft4_trainer.cpp
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/gta4-recomp/src/gta4_fault_probe_hooks.cpp")
     target_sources(theft4_core_bridge PRIVATE
         "${CMAKE_SOURCE_DIR}/glue/rexglue-sdk-main/src/graphics/flags.cpp"
@@ -529,7 +531,7 @@ if(THEFT4_BC_TEXTURE_COMPATIBILITY)
 endif()
 add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
     Theft4/Theft4TextureSources.m
-    Theft4/Theft4LauncherView.m
+    Theft4/Theft4LauncherView.m Theft4/Theft4ModMenu.m
     Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
     Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}" ${THEFT4_TIMECYCLE_RESOURCES})
 if(THEFT4_BC_TEXTURE_COMPATIBILITY)

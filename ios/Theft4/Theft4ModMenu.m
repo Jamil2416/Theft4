@@ -1,0 +1,728 @@
+#import "Theft4ModMenu.h"
+#import <GameController/GameController.h>
+#import <QuartzCore/QuartzCore.h>
+#include "theft4_trainer.h"
+#ifdef THEFT4_HAS_GAME_STARTUP
+#define TRAINER_GET(s) theft4_trainer_get(s)
+#define TRAINER_SET(s, v) theft4_trainer_set((s), (v))
+#define TRAINER_RUN(a) theft4_trainer_run(a)
+#define TRAINER_SPAWN(m) theft4_trainer_spawn_vehicle(m)
+#define TRAINER_ACTIVE() theft4_trainer_active()
+#else
+// Builds without the game runtime show the menu with nothing to drive.
+#define TRAINER_GET(s) 0
+#define TRAINER_SET(s, v) ((void)0)
+#define TRAINER_RUN(a) ((void)0)
+#define TRAINER_SPAWN(m) ((void)0)
+#define TRAINER_ACTIVE() 0
+#endif
+
+static UIColor *Ink(uint32_t rgb) {
+    return [UIColor colorWithRed:((rgb >> 16) & 255) / 255.0 green:((rgb >> 8) & 255) / 255.0
+                            blue:(rgb & 255) / 255.0 alpha:1];
+}
+
+@implementation Theft4ModItem
++ (instancetype)submenu:(NSString *)title help:(NSString *)help children:(NSArray<Theft4ModItem *> *)children {
+    Theft4ModItem *item = [self new];
+    item.title = title; item.help = help; item.kind = Theft4ModItemSubmenu; item.children = children;
+    return item;
+}
++ (instancetype)toggle:(NSString *)title help:(NSString *)help
+                  isOn:(BOOL (^)(void))isOn setOn:(void (^)(BOOL))setOn {
+    Theft4ModItem *item = [self new];
+    item.title = title; item.help = help; item.kind = Theft4ModItemToggle;
+    item.isOn = isOn; item.setOn = setOn;
+    return item;
+}
++ (instancetype)action:(NSString *)title help:(NSString *)help run:(void (^)(void))run {
+    Theft4ModItem *item = [self new];
+    item.title = title; item.help = help; item.kind = Theft4ModItemAction; item.run = run;
+    return item;
+}
+@end
+
+static const NSInteger kVisibleRows = 10;
+static const CGFloat kRowHeight = 34, kHeaderHeight = 64, kFooterHeight = 40, kPanelWidth = 330;
+// Touchpad travel (axis units, -1...1) per selection step and per value step.
+static const CGFloat kVerticalStep = 0.22, kHorizontalStep = 0.45, kAxisLock = 0.10;
+
+typedef NS_ENUM(NSInteger, Theft4SwipeAxis) { Theft4SwipeNone, Theft4SwipeVertical, Theft4SwipeHorizontal };
+
+@interface Theft4ModMenu ()
+@end
+
+@implementation Theft4ModMenu {
+    Theft4ModItem *_root;
+    NSMutableArray<Theft4ModItem *> *_stack;     // submenu path, root first
+    NSMutableArray<NSNumber *> *_selections;     // selected row per level
+    UIView *_panel, *_header, *_footer, *_helpBar;
+    UILabel *_title, *_subtitle, *_counter, *_help, *_status;
+    NSArray<UIView *> *_rows;
+    NSArray<UILabel *> *_rowTitles, *_rowValues;
+    NSInteger _firstVisible;
+    CADisplayLink *_poll;
+    BOOL _wasClicked, _wasTouched, _horizontalUsed;
+    CGPoint _touchStart, _lastStep;
+    Theft4SwipeAxis _axis;
+    uint32_t _statusCounter;
+    CFTimeInterval _statusUntil;
+    // Appearance, from the menu's own Settings page.
+    NSInteger _accentRed, _accentGreen, _accentBlue, _opacity;
+    UIView *_accentBar;
+}
+
+static NSString *const kAccentRedKey = @"Theft4ModMenuAccentRed";
+static NSString *const kAccentGreenKey = @"Theft4ModMenuAccentGreen";
+static NSString *const kAccentBlueKey = @"Theft4ModMenuAccentBlue";
+static NSString *const kOpacityKey = @"Theft4ModMenuOpacity";
+
+- (UIColor *)accent {
+    return [UIColor colorWithRed:_accentRed / 255.0 green:_accentGreen / 255.0 blue:_accentBlue / 255.0 alpha:1];
+}
+
+- (void)loadAppearance {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSInteger (^stored)(NSString *, NSInteger) = ^NSInteger(NSString *key, NSInteger fallback) {
+        return [defaults objectForKey:key] ? [defaults integerForKey:key] : fallback;
+    };
+    _accentRed = stored(kAccentRedKey, 242);
+    _accentGreen = stored(kAccentGreenKey, 201);
+    _accentBlue = stored(kAccentBlueKey, 76);
+    _opacity = stored(kOpacityKey, 90);
+}
+
+// Background panels follow the opacity setting; text always stays opaque.
+- (void)applyAppearance {
+    const CGFloat alpha = MAX(20, MIN(100, _opacity)) / 100.0;
+    _panel.backgroundColor = [Ink(0x1C1F21) colorWithAlphaComponent:alpha];
+    _helpBar.backgroundColor = [Ink(0x1C1F21) colorWithAlphaComponent:alpha];
+    _header.backgroundColor = [UIColor colorWithWhite:0 alpha:MIN(1.0, alpha + 0.05)];
+    _footer.backgroundColor = [UIColor colorWithWhite:0 alpha:MIN(1.0, alpha + 0.05)];
+    _accentBar.backgroundColor = self.accent;
+    [self refresh];
+}
+
+- (Theft4ModItem *)appearanceValue:(NSString *)title help:(NSString *)help ivar:(NSInteger *)ivar
+                              key:(NSString *)key minimum:(NSInteger)minimum maximum:(NSInteger)maximum
+                             step:(NSInteger)step suffix:(NSString *)suffix {
+    __weak Theft4ModMenu *weakSelf = self;
+    Theft4ModItem *item = [Theft4ModItem new];
+    item.title = title; item.help = help; item.kind = Theft4ModItemValue;
+    item.minimum = minimum; item.maximum = maximum; item.step = step;
+    item.getValue = ^NSInteger { return weakSelf ? *ivar : 0; };
+    item.setValue = ^(NSInteger value) {
+        Theft4ModMenu *menu = weakSelf;
+        if (!menu) return;
+        *ivar = value;
+        [NSUserDefaults.standardUserDefaults setInteger:value forKey:key];
+        [menu applyAppearance];
+    };
+    item.format = ^NSString *(NSInteger v) { return [NSString stringWithFormat:@"%ld%@", (long)v, suffix]; };
+    return item;
+}
+
+- (Theft4ModItem *)settingsMenu {
+    __weak Theft4ModMenu *weakSelf = self;
+    return [Theft4ModItem submenu:@"Settings" help:@"Menu colour and transparency" children:@[
+        [self appearanceValue:@"Accent Red" help:@"Highlight colour, red" ivar:&_accentRed
+            key:kAccentRedKey minimum:0 maximum:255 step:15 suffix:@""],
+        [self appearanceValue:@"Accent Green" help:@"Highlight colour, green" ivar:&_accentGreen
+            key:kAccentGreenKey minimum:0 maximum:255 step:15 suffix:@""],
+        [self appearanceValue:@"Accent Blue" help:@"Highlight colour, blue" ivar:&_accentBlue
+            key:kAccentBlueKey minimum:0 maximum:255 step:15 suffix:@""],
+        [self appearanceValue:@"Menu Opacity" help:@"Background transparency" ivar:&_opacity
+            key:kOpacityKey minimum:20 maximum:100 step:5 suffix:@"%"],
+        [Theft4ModItem action:@"Reset Appearance" help:@"Amber accent, 90% opacity" run:^{
+            Theft4ModMenu *menu = weakSelf;
+            if (!menu) return;
+            for (NSString *key in @[kAccentRedKey, kAccentGreenKey, kAccentBlueKey, kOpacityKey])
+                [NSUserDefaults.standardUserDefaults removeObjectForKey:key];
+            [menu loadAppearance];
+            [menu applyAppearance];
+        }],
+    ]];
+}
+
+#pragma mark - Persistence
+
++ (NSDictionary<NSString *, NSNumber *> *)persistentSettings {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    return @{
+        @"Theft4ModGodMode": @(THEFT4_TRAINER_GOD_MODE),
+        @"Theft4ModUnlimitedAmmo": @(THEFT4_TRAINER_UNLIMITED_AMMO),
+        @"Theft4ModNeverWanted": @(THEFT4_TRAINER_NEVER_WANTED),
+        @"Theft4ModInfiniteSprint": @(THEFT4_TRAINER_INFINITE_SPRINT),
+        @"Theft4ModNoRagdoll": @(THEFT4_TRAINER_NO_RAGDOLL),
+        @"Theft4ModCarGodMode": @(THEFT4_TRAINER_CAR_GOD_MODE),
+        @"Theft4ModRadioOnFoot": @(THEFT4_TRAINER_RADIO_ON_FOOT),
+        @"Theft4ModHideHUD": @(THEFT4_TRAINER_HIDE_HUD),
+    };
+#else
+    return @{};
+#endif
+}
+
++ (void)applyPersistedSettings {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [[self persistentSettings] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSNumber *setting, BOOL *stop) {
+        TRAINER_SET((theft4_trainer_setting)setting.integerValue, [defaults boolForKey:key] ? 1 : 0);
+    }];
+}
+
+#pragma mark - Menu model
+
+static NSString *DefaultsKeyFor(NSInteger setting) {
+    for (NSString *key in [Theft4ModMenu persistentSettings])
+        if ([Theft4ModMenu persistentSettings][key].integerValue == setting) return key;
+    return nil;
+}
+
+- (Theft4ModItem *)trainerToggle:(NSString *)title help:(NSString *)help setting:(NSInteger)setting {
+    __weak Theft4ModMenu *weakSelf = self;
+    return [Theft4ModItem toggle:title help:help
+        isOn:^BOOL { return TRAINER_GET((theft4_trainer_setting)setting) != 0; }
+        setOn:^(BOOL on) {
+            TRAINER_SET((theft4_trainer_setting)setting, on ? 1 : 0);
+            NSString *key = DefaultsKeyFor(setting);
+            if (key) {
+                [NSUserDefaults.standardUserDefaults setBool:on forKey:key];
+                Theft4ModMenu *menu = weakSelf;
+                if (menu.persistentSettingChanged) menu.persistentSettingChanged(key, on);
+            }
+        }];
+}
+
+- (Theft4ModItem *)trainerAction:(NSString *)title help:(NSString *)help action:(NSInteger)action {
+    return [Theft4ModItem action:title help:help run:^{ TRAINER_RUN((theft4_trainer_action)action); }];
+}
+
+- (Theft4ModItem *)trainerValue:(NSString *)title help:(NSString *)help setting:(NSInteger)setting
+                        minimum:(NSInteger)minimum maximum:(NSInteger)maximum step:(NSInteger)step
+                         format:(NSString *(^)(NSInteger))format {
+    Theft4ModItem *item = [Theft4ModItem new];
+    item.title = title; item.help = help; item.kind = Theft4ModItemValue;
+    item.minimum = minimum; item.maximum = maximum; item.step = step;
+    item.getValue = ^NSInteger { return TRAINER_GET((theft4_trainer_setting)setting); };
+    item.setValue = ^(NSInteger value) { TRAINER_SET((theft4_trainer_setting)setting, (int)value); };
+    item.format = format;
+    return item;
+}
+
+static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
+    // Display name, model name. Models missing from the running game or
+    // episode are reported on spawn rather than hidden.
+    return @[
+        @[@"Sports", @"Banshee:banshee", @"Comet:comet", @"Coquette:coquette", @"Feltzer:feltzer",
+          @"Infernus:infernus", @"Sultan RS:sultanrs", @"Super GT:supergt", @"Turismo:turismo",
+          @"Bullet GT:bullet", @"F620:f620", @"Super Diamond:superd"],
+        @[@"Muscle", @"Buccaneer:buccaneer", @"Dukes:dukes", @"Faction:faction", @"Ruiner:ruiner",
+          @"Sabre:sabre", @"Sabre GT:sabregt", @"Stallion:stalion", @"Vigero:vigero", @"Voodoo:voodoo"],
+        @[@"Sedans & Coupes", @"Admiral:admiral", @"Blista Compact:blista", @"Cognoscenti:cognoscenti",
+          @"Emperor:emperor", @"Esperanto:esperanto", @"Feroci:feroci", @"Fortune:fortune", @"Futo:futo",
+          @"Hakumai:hakumai", @"Ingot:ingot", @"Intruder:intruder", @"Marbella:marbella", @"Merit:merit",
+          @"Oracle:oracle", @"PMP 600:pmp600", @"Premier:premier", @"Presidente:pres", @"Primo:primo",
+          @"Schafter:schafter", @"Sentinel:sentinel", @"Solair:solair", @"Stratum:stratum",
+          @"Sultan:sultan", @"Vincent:vincent", @"Washington:washington", @"Willard:willard",
+          @"Chavos:chavos", @"Dilettante:dilettante", @"Uranus:uranus", @"DF8-90:df8",
+          @"Perennial:perennial", @"Serrano:serrano", @"Buffalo:buffalo", @"Stretch:stretch"],
+        @[@"SUVs & Vans", @"Cavalcade:cavalcade", @"FXT:fxt", @"Habanero:habanero", @"Huntley Sport:huntley",
+          @"Landstalker:landstalker", @"Patriot:patriot", @"Rancher:rancher", @"Rebla:rebla",
+          @"Bobcat:bobcat", @"Peyote:peyote", @"Moonbeam:moonbeam", @"Minivan:minivan",
+          @"Burrito:burrito", @"Speedo:speedo", @"Pony:pony", @"Boxville:boxville"],
+        @[@"Work & Service", @"Taxi:taxi", @"Cabby:cabby", @"Bus:bus", @"Mr. Tasty:mrtasty",
+          @"Trashmaster:trash", @"Flatbed:flatbed", @"Mule:mule", @"Benson:benson", @"Yankee:yankee",
+          @"Biff:biff", @"Steed:steed", @"Packer:packer", @"Phantom:phantom", @"Forklift:forklift",
+          @"Airtug:airtug", @"Romero:romero"],
+        @[@"Emergency", @"Police Cruiser:police", @"Police Stinger:police2", @"Police Patriot:polpatriot",
+          @"NOOSE Cruiser:noose", @"NOOSE Stockade:nstockade", @"FIB Buffalo:fbi",
+          @"Police Stockade:pstockade", @"Ambulance:ambulance", @"Fire Truck:firetruk", @"APC:apc"],
+        @[@"Motorcycles", @"Faggio:faggio", @"NRG 900:nrg900", @"PCJ-600:pcj", @"Sanchez:sanchez",
+          @"Hellfury:hellfury", @"Zombie:zombieb", @"Akuma:akuma", @"Double T:double", @"Vader:vader",
+          @"Hexer:hexer", @"Innovation:innovation", @"Daemon:daemon", @"Police Bike:policeb"],
+        @[@"Helicopters", @"Annihilator:annihilator", @"Maverick:maverick", @"Police Maverick:polmav",
+          @"Tour Maverick:tourmav", @"Buzzard:buzzard", @"Swift:swift"],
+        @[@"Boats", @"Dinghy:dinghy", @"Jetmax:jetmax", @"Marquis:marquis", @"Predator:predator",
+          @"Reefer:reefer", @"Squalo:squalo", @"Tropic:tropic", @"Tug:tuga", @"Floater:floater",
+          @"Smuggler:smuggler"],
+    ];
+}
+
+- (Theft4ModItem *)buildRootWithOverlays:(NSArray<Theft4ModItem *> *)overlays {
+    NSString *(^plain)(NSInteger) = ^NSString *(NSInteger v) { return [NSString stringWithFormat:@"%ld", (long)v]; };
+    NSString *(^percent)(NSInteger) = ^NSString *(NSInteger v) { return [NSString stringWithFormat:@"%ld%%", (long)v]; };
+
+    NSArray *player = @[
+        [self trainerToggle:@"God Mode" help:@"No damage or death for the player"
+            setting:THEFT4_TRAINER_GOD_MODE],
+        [self trainerToggle:@"Never Wanted" help:@"Police never chase you"
+            setting:THEFT4_TRAINER_NEVER_WANTED],
+        [self trainerValue:@"Wanted Level" help:@"Applied as soon as it changes"
+            setting:THEFT4_TRAINER_WANTED_LEVEL minimum:0 maximum:6 step:1 format:^NSString *(NSInteger v) {
+                return v ? [@"" stringByPaddingToLength:v withString:@"★" startingAtIndex:0] : @"None";
+            }],
+        [self trainerToggle:@"Infinite Sprint" help:@"Run without getting tired"
+            setting:THEFT4_TRAINER_INFINITE_SPRINT],
+        [self trainerToggle:@"No Ragdoll" help:@"Stay on your feet and on your bike"
+            setting:THEFT4_TRAINER_NO_RAGDOLL],
+        [self trainerAction:@"Ragdoll Player" help:@"Fall over now" action:THEFT4_TRAINER_RAGDOLL_PLAYER],
+        [self trainerToggle:@"Invisible" help:@"Hide the player model"
+            setting:THEFT4_TRAINER_INVISIBLE],
+        [self trainerToggle:@"No Clip" help:@"Fly through walls · LB down, RB up, RT faster"
+            setting:THEFT4_TRAINER_NOCLIP],
+        [self trainerValue:@"No Clip & Camera Speed" help:@"Flying speed"
+            setting:THEFT4_TRAINER_NOCLIP_SPEED minimum:1 maximum:10 step:1 format:plain],
+        [self trainerToggle:@"Free Camera" help:@"Fly the camera · with No Clip, you follow it"
+            setting:THEFT4_TRAINER_FREECAM],
+        [self trainerValue:@"Free Camera Field of View" help:@"Degrees"
+            setting:THEFT4_TRAINER_FREECAM_FOV minimum:30 maximum:100 step:5 format:^NSString *(NSInteger v) {
+                return [NSString stringWithFormat:@"%ld°", (long)v];
+            }],
+        [self trainerAction:@"Refill Health & Armor" help:@"Full health and armor"
+            action:THEFT4_TRAINER_REFILL_HEALTH_ARMOR],
+        [self trainerAction:@"Health & Armor to Minimum" help:@"One hit from death"
+            action:THEFT4_TRAINER_MINIMUM_HEALTH_ARMOR],
+        [Theft4ModItem submenu:@"Money" help:@"Change your cash" children:@[
+            [self trainerAction:@"Add $1,000" help:nil action:THEFT4_TRAINER_MONEY_ADD_1K],
+            [self trainerAction:@"Add $10,000" help:nil action:THEFT4_TRAINER_MONEY_ADD_10K],
+            [self trainerAction:@"Add $100,000" help:nil action:THEFT4_TRAINER_MONEY_ADD_100K],
+            [self trainerAction:@"Set to $0" help:nil action:THEFT4_TRAINER_MONEY_ZERO]]],
+        [self trainerToggle:@"Radio On Foot" help:@"Hear the radio while walking"
+            setting:THEFT4_TRAINER_RADIO_ON_FOOT],
+        [self trainerAction:@"Next Radio Station" help:nil action:THEFT4_TRAINER_RADIO_NEXT],
+        [self trainerAction:@"Previous Radio Station" help:nil action:THEFT4_TRAINER_RADIO_PREVIOUS],
+        [self trainerAction:@"Skip Radio Track" help:nil action:THEFT4_TRAINER_RADIO_SKIP_TRACK],
+    ];
+
+    NSMutableArray *groups = [NSMutableArray new];
+    for (NSArray<NSString *> *group in VehicleGroups()) {
+        NSMutableArray *models = [NSMutableArray new];
+        for (NSUInteger i = 1; i < group.count; ++i) {
+            NSArray<NSString *> *parts = [group[i] componentsSeparatedByString:@":"];
+            NSString *model = parts[1];
+            [models addObject:[Theft4ModItem action:parts[0] help:[@"Model " stringByAppendingString:model]
+                run:^{ TRAINER_SPAWN(model.UTF8String); }]];
+        }
+        [groups addObject:[Theft4ModItem submenu:group[0] help:nil children:models]];
+    }
+    NSArray *vehicle = @[
+        [Theft4ModItem submenu:@"Spawn Vehicle" help:@"Any car, bike, helicopter or boat"
+            children:[@[[self trainerToggle:@"Spawn Inside" help:@"Put the player in the new vehicle"
+                setting:THEFT4_TRAINER_SPAWN_INSIDE]] arrayByAddingObjectsFromArray:groups]],
+        [self trainerToggle:@"Car God Mode" help:@"Your current vehicle takes no damage"
+            setting:THEFT4_TRAINER_CAR_GOD_MODE],
+        [self trainerAction:@"Fix Vehicle" help:nil action:THEFT4_TRAINER_FIX_VEHICLE],
+        [self trainerToggle:@"Auto-Repair" help:@"Repair damage as it happens"
+            setting:THEFT4_TRAINER_AUTO_REPAIR],
+        [self trainerToggle:@"Invisible Vehicle" help:nil setting:THEFT4_TRAINER_CAR_INVISIBLE],
+        [self trainerToggle:@"Horn Boost" help:@"Hold the horn to accelerate"
+            setting:THEFT4_TRAINER_HORN_BOOST],
+        [self trainerToggle:@"Instant Brake" help:@"Stop dead the moment you brake"
+            setting:THEFT4_TRAINER_INSTANT_BRAKE],
+        [self trainerAction:@"Explode Vehicle" help:nil action:THEFT4_TRAINER_EXPLODE_VEHICLE],
+        [self trainerAction:@"Burst Tyres" help:nil action:THEFT4_TRAINER_BURST_TYRES],
+        [self trainerAction:@"Wash Vehicle" help:nil action:THEFT4_TRAINER_WASH_VEHICLE],
+        [self trainerAction:@"Set On Wheels" help:@"Flip the vehicle upright"
+            action:THEFT4_TRAINER_VEHICLE_ON_GROUND],
+        [self trainerAction:@"Delete Vehicle" help:@"Step out and remove it"
+            action:THEFT4_TRAINER_DELETE_VEHICLE],
+    ];
+
+    NSArray *teleport = @[
+        [self trainerAction:@"To Waypoint" help:@"Place a waypoint on the map first"
+            action:THEFT4_TRAINER_TELEPORT_WAYPOINT],
+        [self trainerAction:@"Save Position" help:@"Remember where you are"
+            action:THEFT4_TRAINER_SAVE_POSITION],
+        [self trainerAction:@"Return to Saved Position" help:nil action:THEFT4_TRAINER_LOAD_POSITION],
+    ];
+
+    NSArray *weapon = @[
+        [self trainerToggle:@"Unlimited Ammo" help:@"Reserve ammo never runs out"
+            setting:THEFT4_TRAINER_UNLIMITED_AMMO],
+        [self trainerAction:@"Give All Weapons" help:@"Every weapon with full ammo"
+            action:THEFT4_TRAINER_GIVE_ALL_WEAPONS],
+        [self trainerAction:@"Remove All Weapons" help:nil action:THEFT4_TRAINER_REMOVE_ALL_WEAPONS],
+    ];
+
+    NSArray<NSString *> *weathers = @[@"Extra Sunny", @"Sunny", @"Sunny & Windy", @"Cloudy",
+                                      @"Rain", @"Drizzle", @"Foggy", @"Thunderstorm"];
+    NSArray<NSString *> *police = @[@"Relaxed", @"Normal", @"Aggressive", @"Relentless"];
+    Theft4ModItem *weather = [self trainerValue:@"Weather" help:@"Changes the weather now"
+        setting:THEFT4_TRAINER_WEATHER minimum:0 maximum:7 step:1 format:^NSString *(NSInteger v) {
+            return weathers[MAX(0, MIN(7, v))];
+        }];
+    weather.wraps = YES;
+    Theft4ModItem *hour = [self trainerValue:@"Time of Day" help:@"Changes the clock now"
+        setting:THEFT4_TRAINER_HOUR minimum:0 maximum:23 step:1 format:^NSString *(NSInteger v) {
+            return [NSString stringWithFormat:@"%02ld:00", (long)v];
+        }];
+    hour.wraps = YES;
+    NSArray *world = @[
+        hour,
+        [self trainerToggle:@"Freeze Time" help:@"Keep the clock at the chosen hour"
+            setting:THEFT4_TRAINER_FREEZE_TIME],
+        weather,
+        [self trainerToggle:@"Lock Weather" help:@"Keep the chosen weather"
+            setting:THEFT4_TRAINER_LOCK_WEATHER],
+        [self trainerValue:@"Traffic Density" help:@"Cars on the streets"
+            setting:THEFT4_TRAINER_TRAFFIC_DENSITY minimum:0 maximum:200 step:25 format:percent],
+        [self trainerValue:@"Pedestrian Density" help:@"People on the streets"
+            setting:THEFT4_TRAINER_PED_DENSITY minimum:0 maximum:200 step:25 format:percent],
+        [self trainerValue:@"Police Response" help:@"How hard the police come after you"
+            setting:THEFT4_TRAINER_POLICE_RESPONSE minimum:0 maximum:3 step:1 format:^NSString *(NSInteger v) {
+                return police[MAX(0, MIN(3, v))];
+            }],
+        [self trainerToggle:@"Hide HUD & Radar" help:@"Cinematic view"
+            setting:THEFT4_TRAINER_HIDE_HUD],
+    ];
+
+    return [Theft4ModItem submenu:@"Mod Menu" help:nil children:@[
+        [Theft4ModItem submenu:@"Player" help:nil children:player],
+        [Theft4ModItem submenu:@"Vehicle" help:nil children:vehicle],
+        [Theft4ModItem submenu:@"Teleport" help:nil children:teleport],
+        [Theft4ModItem submenu:@"Weapon" help:nil children:weapon],
+        [Theft4ModItem submenu:@"World" help:nil children:world],
+        [Theft4ModItem submenu:@"Display" help:@"Performance graphs and on-screen controls"
+            children:overlays ?: @[]],
+        [self settingsMenu],
+    ]];
+}
+
+#pragma mark - View
+
+static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
+    UILabel *label = [UILabel new];
+    label.font = mono ? [UIFont monospacedSystemFontOfSize:size weight:weight]
+                      : [UIFont systemFontOfSize:size weight:weight];
+    label.textColor = Ink(0xE4E4E4);
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.75;
+    return label;
+}
+
+- (instancetype)initWithOverlays:(NSArray<Theft4ModItem *> *)overlays {
+    self = [super initWithFrame:CGRectZero];
+    if (!self) return nil;
+    [self loadAppearance];
+    _root = [self buildRootWithOverlays:overlays];
+    _stack = [NSMutableArray arrayWithObject:_root];
+    _selections = [NSMutableArray arrayWithObject:@0];
+    self.hidden = YES;
+    self.userInteractionEnabled = YES;
+
+    _panel = [UIView new];
+    _panel.backgroundColor = [Ink(0x2A2D2E) colorWithAlphaComponent:0.90];
+    _panel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.10].CGColor;
+    _panel.layer.borderWidth = 1;
+    _panel.clipsToBounds = YES;
+    [self addSubview:_panel];
+
+    _header = [UIView new];
+    _header.backgroundColor = UIColor.blackColor;
+    [_panel addSubview:_header];
+    _title = MenuLabel(24, UIFontWeightBold, YES);
+    _title.textAlignment = NSTextAlignmentCenter;
+    [_header addSubview:_title];
+    _subtitle = MenuLabel(10, UIFontWeightMedium, YES);
+    _subtitle.textAlignment = NSTextAlignmentCenter;
+    _subtitle.textColor = Ink(0x9A9A9A);
+    _subtitle.text = @"THEFT4";
+    [_header addSubview:_subtitle];
+    _accentBar = [UIView new];
+    [_panel addSubview:_accentBar];
+
+    NSMutableArray *rows = [NSMutableArray new], *titles = [NSMutableArray new], *values = [NSMutableArray new];
+    for (NSInteger i = 0; i < kVisibleRows; ++i) {
+        UIView *row = [UIView new];
+        row.tag = i;
+        UILabel *title = MenuLabel(15, UIFontWeightRegular, NO);
+        UILabel *value = MenuLabel(14, UIFontWeightSemibold, YES);
+        value.textAlignment = NSTextAlignmentRight;
+        [row addSubview:title];
+        [row addSubview:value];
+        [row addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(rowTapped:)]];
+        [_panel addSubview:row];
+        [rows addObject:row]; [titles addObject:title]; [values addObject:value];
+    }
+    _rows = rows; _rowTitles = titles; _rowValues = values;
+
+    _footer = [UIView new];
+    _footer.backgroundColor = UIColor.blackColor;
+    [_panel addSubview:_footer];
+    _counter = MenuLabel(18, UIFontWeightBold, YES);
+    _counter.textAlignment = NSTextAlignmentCenter;
+    [_footer addSubview:_counter];
+
+    _helpBar = [UIView new];
+    _helpBar.backgroundColor = [Ink(0x2A2D2E) colorWithAlphaComponent:0.90];
+    [self addSubview:_helpBar];
+    _help = MenuLabel(13, UIFontWeightRegular, NO);
+    _help.numberOfLines = 2;
+    [_helpBar addSubview:_help];
+    _status = MenuLabel(13, UIFontWeightSemibold, NO);
+    _status.textColor = Ink(0x8FD18F);
+    _status.numberOfLines = 2;
+    [_helpBar addSubview:_status];
+
+    UITapGestureRecognizer *backTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(back)];
+    [_header addGestureRecognizer:backTap];
+    [self applyAppearance];
+    return self;
+}
+
+// Touches outside the menu reach the game.
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return hit == self ? nil : hit;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    const UIEdgeInsets safe = self.safeAreaInsets;
+    const CGFloat width = MIN(kPanelWidth, self.bounds.size.width - safe.left - safe.right - 32);
+    const CGFloat rowsHeight = kRowHeight * kVisibleRows;
+    const CGFloat height = kHeaderHeight + rowsHeight + kFooterHeight;
+    const CGFloat x = safe.left + 16;
+    const CGFloat y = MAX(safe.top + 12, (self.bounds.size.height - height - 70) / 2);
+    _panel.frame = CGRectMake(x, y, width, height);
+    _header.frame = CGRectMake(0, 0, width, kHeaderHeight);
+    _accentBar.frame = CGRectMake(0, kHeaderHeight - 2, width, 2);
+    _title.frame = CGRectMake(12, 8, width - 24, 32);
+    _subtitle.frame = CGRectMake(12, 40, width - 24, 16);
+    for (NSInteger i = 0; i < kVisibleRows; ++i) {
+        UIView *row = _rows[i];
+        row.frame = CGRectMake(0, kHeaderHeight + i * kRowHeight, width, kRowHeight);
+        _rowTitles[i].frame = CGRectMake(14, 0, width * 0.62, kRowHeight);
+        _rowValues[i].frame = CGRectMake(width * 0.62, 0, width * 0.38 - 14, kRowHeight);
+    }
+    _footer.frame = CGRectMake(0, height - kFooterHeight, width, kFooterHeight);
+    _counter.frame = _footer.bounds;
+    _helpBar.frame = CGRectMake(x, CGRectGetMaxY(_panel.frame) + 8, width, 60);
+    _help.frame = CGRectMake(12, 4, width - 24, 26);
+    _status.frame = CGRectMake(12, 30, width - 24, 26);
+}
+
+- (Theft4ModItem *)level { return _stack.lastObject; }
+- (NSInteger)selected { return _selections.lastObject.integerValue; }
+- (void)setSelected:(NSInteger)index { _selections[_selections.count - 1] = @(index); }
+
+- (NSString *)valueTextFor:(Theft4ModItem *)item selected:(BOOL)selected {
+    switch (item.kind) {
+        case Theft4ModItemSubmenu: return @">";
+        case Theft4ModItemToggle: return item.isOn && item.isOn() ? @"[+]" : @"[x]";
+        case Theft4ModItemAction: return @"";
+        case Theft4ModItemValue: {
+            const NSInteger v = item.getValue ? item.getValue() : 0;
+            NSString *text = item.format ? item.format(v) : [NSString stringWithFormat:@"%ld", (long)v];
+            return selected ? [NSString stringWithFormat:@"‹ %@ ›", text] : text;
+        }
+    }
+    return @"";
+}
+
+- (void)refresh {
+    Theft4ModItem *level = self.level;
+    NSArray<Theft4ModItem *> *items = level.children;
+    const NSInteger count = (NSInteger)items.count;
+    NSInteger selected = MAX(0, MIN(self.selected, count - 1));
+    [self setSelected:selected];
+    if (selected < _firstVisible) _firstVisible = selected;
+    if (selected >= _firstVisible + kVisibleRows) _firstVisible = selected - kVisibleRows + 1;
+    _firstVisible = MAX(0, MIN(_firstVisible, MAX(0, count - kVisibleRows)));
+
+    _title.text = level.title.uppercaseString;
+    _subtitle.text = _stack.count > 1 ? @"‹ BACK  ·  THEFT4" : @"THEFT4";
+    for (NSInteger i = 0; i < kVisibleRows; ++i) {
+        const NSInteger index = _firstVisible + i;
+        UIView *row = _rows[i];
+        if (index >= count) { row.hidden = YES; continue; }
+        row.hidden = NO;
+        Theft4ModItem *item = items[index];
+        const BOOL isSelected = index == selected;
+        UIColor *accent = self.accent;
+        row.backgroundColor = isSelected ? [accent colorWithAlphaComponent:0.16] : UIColor.clearColor;
+        _rowTitles[i].text = item.title;
+        _rowTitles[i].textColor = isSelected ? accent : Ink(0xE4E4E4);
+        _rowValues[i].text = [self valueTextFor:item selected:isSelected];
+        const BOOL on = item.kind == Theft4ModItemToggle && item.isOn && item.isOn();
+        _rowValues[i].textColor = item.kind == Theft4ModItemToggle ? (on ? Ink(0x4CD964) : Ink(0xE5484D))
+                                 : isSelected ? accent : Ink(0xBDBDBD);
+    }
+    _counter.text = count ? [NSString stringWithFormat:@"%ld / %ld", (long)selected + 1, (long)count] : @"0 / 0";
+    NSString *help = count ? items[selected].help : nil;
+    if (!TRAINER_ACTIVE()) help = @"Mods start once you are in Liberty City";
+    _help.text = help.length ? [@"(i) " stringByAppendingString:help] : @"";
+    _status.hidden = CACurrentMediaTime() > _statusUntil;
+}
+
+#pragma mark - Navigation
+
+- (void)setOpen:(BOOL)open {
+    if (_open == open) return;
+    _open = open;
+    self.hidden = !open;
+    if (open) [self refresh];
+}
+
+- (void)moveSelection:(NSInteger)delta {
+    const NSInteger count = (NSInteger)self.level.children.count;
+    if (!count) return;
+    [self setSelected:(self.selected + delta + count) % count];
+    [self refresh];
+}
+
+- (void)adjust:(Theft4ModItem *)item direction:(NSInteger)direction {
+    const NSInteger step = MAX(1, item.step);
+    NSInteger value = (item.getValue ? item.getValue() : item.minimum) + direction * step;
+    if (item.wraps) {
+        const NSInteger span = item.maximum - item.minimum + step;
+        value = item.minimum + ((value - item.minimum) % span + span) % span;
+    } else {
+        value = MAX(item.minimum, MIN(item.maximum, value));
+    }
+    if (item.setValue) item.setValue(value);
+    [self refresh];
+}
+
+- (void)activate {
+    NSArray<Theft4ModItem *> *items = self.level.children;
+    if (!items.count) return;
+    Theft4ModItem *item = items[self.selected];
+    switch (item.kind) {
+        case Theft4ModItemSubmenu:
+            [_stack addObject:item];
+            [_selections addObject:@0];
+            _firstVisible = 0;
+            break;
+        case Theft4ModItemToggle:
+            if (item.setOn) item.setOn(!(item.isOn && item.isOn()));
+            break;
+        case Theft4ModItemAction:
+            if (item.run) item.run();
+            break;
+        case Theft4ModItemValue:
+            [self adjust:item direction:1];
+            return;
+    }
+    [self refresh];
+}
+
+- (void)back {
+    if (_stack.count <= 1) { [self setOpen:NO]; return; }
+    [_stack removeLastObject];
+    [_selections removeLastObject];
+    _firstVisible = 0;
+    [self refresh];
+}
+
+// Right selects or raises; left goes back or lowers.
+- (void)horizontal:(NSInteger)direction {
+    NSArray<Theft4ModItem *> *items = self.level.children;
+    Theft4ModItem *item = items.count ? items[self.selected] : nil;
+    if (item.kind == Theft4ModItemValue) {
+        [self adjust:item direction:direction];
+    } else if (!_horizontalUsed) {
+        _horizontalUsed = YES;  // one select or back per slide
+        if (direction > 0) [self activate];
+        else [self back];
+    }
+}
+
+- (void)rowTapped:(UITapGestureRecognizer *)tap {
+    const NSInteger index = _firstVisible + tap.view.tag;
+    NSArray<Theft4ModItem *> *items = self.level.children;
+    if (index >= (NSInteger)items.count) return;
+    [self setSelected:index];
+    Theft4ModItem *item = items[index];
+    if (item.kind == Theft4ModItemValue) {
+        const CGPoint p = [tap locationInView:tap.view];
+        [self adjust:item direction:p.x < tap.view.bounds.size.width / 2 ? -1 : 1];
+    } else {
+        [self activate];
+    }
+}
+
+#pragma mark - Touchpad
+
+- (void)setGameActive:(BOOL)gameActive {
+    _gameActive = gameActive;
+    if (gameActive && !_poll) {
+        _poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
+        _poll.preferredFrameRateRange = CAFrameRateRangeMake(30, 60, 60);
+        [_poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else if (!gameActive && _poll) {
+        [_poll invalidate];
+        _poll = nil;
+        [self setOpen:NO];
+    }
+}
+
+- (void)removeFromSuperview {
+    [_poll invalidate];
+    _poll = nil;
+    [super removeFromSuperview];
+}
+
+- (GCDualSenseGamepad *)dualSense {
+    for (GCController *controller in GCController.controllers)
+        if ([controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class])
+            return (GCDualSenseGamepad *)controller.extendedGamepad;
+    return nil;
+}
+
+- (void)pollController {
+    [self showTrainerStatus];
+    GCDualSenseGamepad *pad = self.dualSense;
+    if (!pad) { _wasClicked = _wasTouched = NO; return; }
+    const BOOL clicked = pad.touchpadButton.pressed;
+    const BOOL touched = pad.touchpadButton.touched;
+    const CGPoint p = CGPointMake(pad.touchpadPrimary.xAxis.value, pad.touchpadPrimary.yAxis.value);
+    if (clicked && !_wasClicked) [self setOpen:!_open];
+    _wasClicked = clicked;
+    // A click is not a slide; a slide starts fresh after the click is released.
+    if (!_open || clicked || !touched) {
+        _wasTouched = NO;
+        return;
+    }
+    if (!_wasTouched) {
+        _wasTouched = YES;
+        _touchStart = _lastStep = p;
+        _axis = Theft4SwipeNone;
+        _horizontalUsed = NO;
+        return;
+    }
+    if (_axis == Theft4SwipeNone) {
+        const CGFloat dx = p.x - _touchStart.x, dy = p.y - _touchStart.y;
+        if (hypot(dx, dy) < kAxisLock) return;
+        _axis = fabs(dx) > fabs(dy) ? Theft4SwipeHorizontal : Theft4SwipeVertical;
+        _lastStep = _touchStart;
+    }
+    if (_axis == Theft4SwipeVertical) {
+        // Touchpad y grows upward; sliding up moves the selection up.
+        while (p.y - _lastStep.y >= kVerticalStep) { [self moveSelection:-1]; _lastStep.y += kVerticalStep; }
+        while (_lastStep.y - p.y >= kVerticalStep) { [self moveSelection:1]; _lastStep.y -= kVerticalStep; }
+    } else {
+        while (p.x - _lastStep.x >= kHorizontalStep) { [self horizontal:1]; _lastStep.x += kHorizontalStep; }
+        while (_lastStep.x - p.x >= kHorizontalStep) { [self horizontal:-1]; _lastStep.x -= kHorizontalStep; }
+    }
+}
+
+- (void)showTrainerStatus {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    char message[160] = {0};
+    const uint32_t counter = theft4_trainer_status(message, sizeof(message));
+    if (counter != _statusCounter) {
+        _statusCounter = counter;
+        _status.text = [NSString stringWithUTF8String:message] ?: @"";
+        _statusUntil = CACurrentMediaTime() + 3.0;
+    }
+#endif
+    if (_open) {
+        // Toggle states can change from the launcher or the game itself.
+        static CFTimeInterval lastRefresh;
+        const CFTimeInterval now = CACurrentMediaTime();
+        if (now - lastRefresh > 0.25) { lastRefresh = now; [self refresh]; }
+    }
+}
+
+@end

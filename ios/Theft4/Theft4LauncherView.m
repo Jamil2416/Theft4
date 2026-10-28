@@ -511,6 +511,28 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _unlimitedAmmo = [UISwitch new];
     _unlimitedAmmo.onTintColor = Ink(0x35CDD1);
     _unlimitedAmmo.accessibilityIdentifier = @"mods.unlimitedAmmo";
+    // Title, short detail and defaults key for each further trainer switch.
+    NSArray<NSArray<NSString *> *> *trainer = @[
+        @[@"NEVER WANTED", @"The police never chase you.", @"Theft4ModNeverWanted"],
+        @[@"INFINITE SPRINT", @"Run without getting tired.", @"Theft4ModInfiniteSprint"],
+        @[@"NO RAGDOLL", @"Stay on your feet and on your bike.", @"Theft4ModNoRagdoll"],
+        @[@"CAR GOD MODE", @"The vehicle you are in takes no damage.", @"Theft4ModCarGodMode"],
+        @[@"RADIO ON FOOT", @"Keep listening to the radio while walking.", @"Theft4ModRadioOnFoot"],
+        @[@"HIDE HUD & RADAR", @"A clean, cinematic view.", @"Theft4ModHideHUD"],
+    ];
+    NSMutableDictionary<NSString *, UISwitch *> *trainerSwitches = [NSMutableDictionary new];
+    NSMutableArray<UIView *> *trainerRows = [NSMutableArray new];
+    for (NSArray<NSString *> *entry in trainer) {
+        UISwitch *toggle = [UISwitch new];
+        toggle.onTintColor = Ink(0x35CDD1);
+        toggle.accessibilityIdentifier = [@"mods." stringByAppendingString:entry[2]];
+        trainerSwitches[entry[2]] = toggle;
+        [trainerRows addObject:[self setting:entry[0] detail:entry[1] toggle:toggle]];
+    }
+    _trainerSwitches = trainerSwitches;
+    NSString *menuNote = @"In game, click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
+        @"It has these switches and more: vehicle spawner, no clip, free camera, teleport, weapons, money, time, weather, traffic and performance graphs. "
+        @"Changes there are saved here too.";
     _mods = Column(@[
         Copy(@"Make Liberty City your own.", 22, NO),
         [self setting:@"CUSTOM TIME CYCLE"
@@ -532,7 +554,9 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Keep reserve ammunition for weapons you own. Magazines still empty, and you still reload normally. This does not grant weapons."
             toggle:_unlimitedAmmo],
         Copy(@"Reserve ammo is replenished while enabled. Replenished ammo amounts can be included in your game save; turning the mod off restores normal ammo consumption.", 12, NO),
-        Copy(@"Applies when you press Play in a fresh app session. To change it after playing, save, close Theft4 and reopen. Your original game files and saves are kept.", 12, NO)
+        Column(trainerRows, 16),
+        Copy(menuNote, 12, NO),
+        Copy(@"Your original game files and saves are kept.", 12, NO)
     ], 16);
 
     _pages = @[_play, _graphics, _interfacePage, _system, _mods];
@@ -567,7 +591,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Unlimited reserve ammo. Magazines still empty and reload normally. No weapons granted."
             toggle:_unlimitedAmmo]];
         [_mods addArrangedSubview:Copy(@"Replenished ammo can be saved. Turning the mod off restores normal consumption.", 12, NO)];
-        [_mods addArrangedSubview:Copy(@"Choose before Play. Save and reopen the app to change mods after playing.", 12, NO)];
+        for (UIView *row in trainerRows) [_mods addArrangedSubview:row];
+        [_mods addArrangedSubview:Copy(menuNote, 12, NO)];
         NSMutableArray *pages = [NSMutableArray new];
         for (UIStackView *page in @[_graphics, _interfacePage, _system, _mods]) {
             NSMutableArray *items = [NSMutableArray new];

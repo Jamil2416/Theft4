@@ -29,6 +29,7 @@ extern int rex_gta4_native_profile_start(void);
 extern int rex_gta4_native_profile_status(void);
 #import "Theft4TouchControls.h"
 #import "Theft4LauncherView.h"
+#import "Theft4ModMenu.h"
 #ifdef THEFT4_TEXTURE_PREPARATION_PREVIEW
 #import "Theft4TextureSources.h"
 #endif
@@ -490,6 +491,7 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     UIButton *_prepare;
     UIButton *_start;
     UIButton *_ballad;
+    Theft4ModMenu *_modMenu;
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
     NSLayoutConstraint *_gameAspectConstraint;
@@ -587,6 +589,8 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (NSString *)tbogtUnavailableReason;
 - (BOOL)canStartFromLauncher;
 - (void)refreshEpisodeAvailability;
+- (void)createModMenu;
+- (void)openModMenu;
 - (void)startGamePreparation:(NSURL *)game execute:(BOOL)execute;
 - (void)enterGamePresentationMode;
 - (void)initializeSharedGameDirectory;
@@ -845,6 +849,14 @@ static void bootEvent(void *context, const char *event) {
         forControlEvents:UIControlEventValueChanged];
     [_bringupOverlay.unlimitedAmmo addTarget:self action:@selector(gameplayModChanged:)
         forControlEvents:UIControlEventValueChanged];
+    [_bringupOverlay.trainerSwitches enumerateKeysAndObjectsUsingBlock:^(NSString *key, UISwitch *toggle, BOOL *stop) {
+        toggle.on = [NSUserDefaults.standardUserDefaults boolForKey:key];
+        [toggle addTarget:self action:@selector(gameplayModChanged:) forControlEvents:UIControlEventValueChanged];
+#ifndef THEFT4_HAS_GAME_STARTUP
+        toggle.on = NO;
+        toggle.enabled = NO;
+#endif
+    }];
 #ifndef THEFT4_HAS_GTA4_NATIVE_BACKEND
     _bringupOverlay.godMode.on = NO;
     _bringupOverlay.unlimitedAmmo.on = NO;
@@ -1040,6 +1052,7 @@ static void bootEvent(void *context, const char *event) {
         [_frameTimeView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-10],
         [_frameTimeView.widthAnchor constraintEqualToConstant:244],
         [_frameTimeView.heightAnchor constraintEqualToConstant:126]]];
+    [self createModMenu];
     NSError *error = nil;
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory
         inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
@@ -1935,11 +1948,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4SkipIntro"];
 }
 
+// God Mode, Unlimited Ammo and the other trainer switches on the launcher's
+// Mods page. They are saved for the next launch and, once the game runs,
+// also take effect immediately (the mod menu changes the same settings).
 - (void)gameplayModChanged:(UISwitch *)sender {
-    if (_executionAttempted) return;
-    NSString *key = sender == _bringupOverlay.godMode
-        ? @"Theft4ModGodMode" : @"Theft4ModUnlimitedAmmo";
+    NSString *key = sender == _bringupOverlay.godMode ? @"Theft4ModGodMode"
+        : sender == _bringupOverlay.unlimitedAmmo ? @"Theft4ModUnlimitedAmmo"
+        : [_bringupOverlay.trainerSwitches allKeysForObject:sender].firstObject;
+    if (!key) return;
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:key];
+    if (_executionAttempted) [Theft4ModMenu applyPersistedSettings];
 }
 
 - (void)customTimeCycleChanged:(UISwitch *)sender {
@@ -2604,10 +2622,56 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }
 }
 
+// The in-game mod menu. Its Display page drives the same switches as the
+// launcher's Interface page, so both stay in step and persist together.
+- (Theft4ModItem *)overlayToggle:(NSString *)title help:(NSString *)help control:(UISwitch *)control {
+    __weak Theft4ViewController *weakSelf = self;
+    return [Theft4ModItem toggle:title help:help isOn:^BOOL { return control.on; } setOn:^(BOOL on) {
+        Theft4ViewController *controller = weakSelf;
+        if (!controller) return;
+        control.on = on;
+        [controller displaySettingsChanged:nil];
+        controller->_fpsLabel.hidden = !controller->_showFPS.on;
+        controller->_touchControls.active = controller->_sceneActive && controller->_showControls.on;
+        [controller updateFrameTimeHUD];
+    }];
+}
+
+- (void)openModMenu {
+    [self.view bringSubviewToFront:_modMenu];
+    [_modMenu setOpen:YES];
+}
+
+- (void)createModMenu {
+    _modMenu = [[Theft4ModMenu alloc] initWithOverlays:@[
+        [self overlayToggle:@"FPS Counter" help:@"Frames per second, top left" control:_showFPS],
+        [self overlayToggle:@"Frame Time Graph" help:@"Frame pacing graph, top right" control:_showFrameTime],
+        [self overlayToggle:@"CPU Usage" help:@"Per-core CPU load" control:_showCPUUsage],
+        [self overlayToggle:@"On-Screen Controls" help:@"Touch controls over the game" control:_showControls],
+    ]];
+    __weak Theft4ViewController *weakSelf = self;
+    _modMenu.persistentSettingChanged = ^(NSString *key, BOOL on) {
+        Theft4ViewController *controller = weakSelf;
+        if (!controller) return;
+        if ([key isEqualToString:@"Theft4ModGodMode"]) controller->_bringupOverlay.godMode.on = on;
+        else if ([key isEqualToString:@"Theft4ModUnlimitedAmmo"]) controller->_bringupOverlay.unlimitedAmmo.on = on;
+        else controller->_bringupOverlay.trainerSwitches[key].on = on;
+    };
+    _modMenu.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_modMenu];
+    [NSLayoutConstraint activateConstraints:@[
+        [_modMenu.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_modMenu.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_modMenu.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_modMenu.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]]];
+}
+
 - (void)enterGamePresentationMode {
     if (_gamePresentation) return;
     [_bringupOverlay retireScene];
     _gamePresentation = YES;
+    _modMenu.gameActive = YES;
+    [self.view bringSubviewToFront:_modMenu];
     self.controllerUserInteractionEnabled = NO;
     [UIView animateWithDuration:0.2 animations:^{
         self->_bringupOverlay.alpha = 0.0;
@@ -2639,6 +2703,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"GAME MENU"
         message:@"Returning to the main menu ends this game session and closes Theft4. Reopen the app to change any graphics setting before a fresh launch. Save your progress first."
         preferredStyle:UIAlertControllerStyleAlert];
+    // Without a DualSense, the mod menu opens from here and is used by touch.
+    [menu addAction:[UIAlertAction actionWithTitle:@"Mod Menu" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [self openModMenu]; }]];
     NSString *controlsTitle = _showControls.on ? @"Hide On-Screen Controls" : @"Show On-Screen Controls";
     [menu addAction:[UIAlertAction actionWithTitle:controlsTitle style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
@@ -3384,6 +3451,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _prepare.enabled = NO;
     _start.enabled = NO;
     _ballad.enabled = NO;
+    // Mod switches saved from the launcher or an earlier in-game session.
+    if (execute) [Theft4ModMenu applyPersistedSettings];
     if (execute) _executionAttempted = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Retain the controller through completion; all UIKit/core callbacks

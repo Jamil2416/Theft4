@@ -45,6 +45,9 @@
 @property(nonatomic, readonly) UISwitch *nativeAspect;
 @property(nonatomic, readonly) UISwitch *godMode;
 @property(nonatomic, readonly) UISwitch *unlimitedAmmo;
+// Further trainer switches on the Mods page, keyed by user-defaults key
+// (the keys in Theft4ModMenu's persistentSettings).
+@property(nonatomic, readonly) NSDictionary<NSString *, UISwitch *> *trainerSwitches;
 @property(nonatomic, readonly) UIButton *frameSpeedButton;
 @property(nonatomic, readonly) UIButton *restoreGraphicsButton;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
