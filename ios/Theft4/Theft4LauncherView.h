@@ -15,6 +15,9 @@
 @property(nonatomic, readonly) UISlider *lightRed;
 @property(nonatomic, readonly) UISlider *lightGreen;
 @property(nonatomic, readonly) UISlider *lightBlue;
+// Plays a short pulse on connected controllers through iOS directly.
+@property(nonatomic, readonly) UIButton *testVibrationButton;
+@property(nonatomic, readonly) UILabel *vibrationTestResult;
 @property(nonatomic, readonly) UISwitch *anisotropicFiltering;
 @property(nonatomic, readonly) UISwitch *enhancedOutput;
 @property(nonatomic, readonly) UISwitch *fsrBoost;

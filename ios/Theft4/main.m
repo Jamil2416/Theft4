@@ -1,6 +1,7 @@
 #include "../bridge/theft4_retail_mode.h"
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
+#import <CoreHaptics/CoreHaptics.h>
 #import <Metal/MTLDeviceCertification.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -2038,6 +2039,44 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(controllerConnectedForLight:)
         name:GCControllerDidConnectNotification object:nil];
     [self publishControllerLight];
+    [_bringupOverlay.testVibrationButton addTarget:self action:@selector(testControllerVibration)
+        forControlEvents:UIControlEventTouchUpInside];
+}
+
+// Isolates the controller from the game: plays one continuous 0.6 s event
+// through the simplest CoreHaptics path. The result is shown and kept for the
+// log export beside the game driver's own rumble record.
+- (void)testControllerVibration {
+    NSMutableArray<NSString *> *results = [NSMutableArray new];
+    for (GCController *controller in GCController.controllers) {
+        NSString *name = controller.vendorName ?: controller.productCategory ?: @"Controller";
+        CHHapticEngine *engine = [controller.haptics createEngineWithLocality:GCHapticsLocalityDefault];
+        if (!engine) {
+            [results addObject:[NSString stringWithFormat:@"%@: no haptics reported", name]];
+            continue;
+        }
+        NSError *error = nil;
+        CHHapticEvent *event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+            parameters:@[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1],
+                         [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5]]
+            relativeTime:0 duration:0.6];
+        CHHapticPattern *pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
+        id<CHHapticPatternPlayer> player = nil;
+        if (pattern && [engine startAndReturnError:&error]) player = [engine createPlayerWithPattern:pattern error:&error];
+        if (player && [player startAtTime:CHHapticTimeImmediate error:&error]) {
+            [results addObject:[NSString stringWithFormat:@"%@: pulse sent", name]];
+            // Keep the engine alive until the pulse ends.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [engine stopWithCompletionHandler:nil];
+            });
+        } else {
+            [results addObject:[NSString stringWithFormat:@"%@: %@", name,
+                error.localizedDescription ?: @"could not start a haptic player"]];
+        }
+    }
+    NSString *summary = results.count ? [results componentsJoinedByString:@" · "] : @"No controller connected";
+    _bringupOverlay.vibrationTestResult.text = summary;
+    [NSUserDefaults.standardUserDefaults setObject:summary forKey:@"Theft4RumbleLauncherTest"];
 }
 
 - (void)controllerLightChanged:(UISlider *)sender {
@@ -2361,6 +2400,17 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             fsrBoost ? @"ON" : @"OFF", motionBlur ? @"ON" : @"OFF",
             depthOfField ? @"ON" : @"OFF"];
         BOOL success = Theft4WriteString(stream, metadata, &budget);
+        // The game's controller driver records its rumble requests and any
+        // haptics errors here; retail launches write no runtime log.
+        NSUserDefaults *rumbleDefaults = NSUserDefaults.standardUserDefaults;
+        NSDictionary *rumble = [rumbleDefaults dictionaryForKey:@"Theft4RumbleDiagnostics"];
+        NSMutableString *rumbleText = [NSMutableString stringWithString:@"Controller rumble (last game session):"];
+        if (!rumble.count) [rumbleText appendString:@" nothing recorded"];
+        for (NSString *key in [rumble.allKeys sortedArrayUsingSelector:@selector(compare:)])
+            [rumbleText appendFormat:@" %@=%@;", key, rumble[key]];
+        [rumbleText appendFormat:@"\nController vibration test: %@\n",
+            [rumbleDefaults stringForKey:@"Theft4RumbleLauncherTest"] ?: @"not run"];
+        success = success && Theft4WriteString(stream, rumbleText, &budget);
 
         NSURL *applicationSupport = [supportURL URLByDeletingLastPathComponent];
         NSURL *startupURL = [supportURL URLByAppendingPathComponent:@"startup" isDirectory:YES];

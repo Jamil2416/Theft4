@@ -874,6 +874,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         Copy(@"Color shown on a DualSense or DualShock 4 light bar. Changes show on a connected controller right away and stay set during gameplay.", 12, NO), nil];
     [views addObjectsFromArray:rows];
     [views addObject:preview];
+    _testVibrationButton = Action(@"TEST CONTROLLER VIBRATION", NO);
+    _testVibrationButton.accessibilityIdentifier = @"settings.testVibration";
+    _vibrationTestResult = Copy(@"Plays a short pulse on each connected controller, outside the game. If you feel it here but not in play, include Download Latest Log Capture after playing.", 12, NO);
+    [views addObject:_testVibrationButton];
+    [views addObject:_vibrationTestResult];
     return Column(views, 8);
 }
 

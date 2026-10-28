@@ -35,6 +35,53 @@
 // Per-controller Obj-C state
 // ---------------------------------------------------------------------------
 
+// Rumble diagnostics. Retail launches write no runtime log, so a compact
+// record of what the game asked for and what the controller accepted is kept
+// in user defaults; the launcher's log export includes it. Updated on
+// connect, on errors, on the first nonzero request and every 120 requests.
+static NSString* const kRumbleDiagnosticsKey = @"Theft4RumbleDiagnostics";
+static std::atomic<uint64_t> g_rumble_requests{0};
+static std::atomic<uint64_t> g_rumble_nonzero{0};
+static std::atomic<uint32_t> g_rumble_max_left{0};
+static std::atomic<uint32_t> g_rumble_max_right{0};
+static std::atomic<uint64_t> g_rumble_unrouted{0};
+static std::atomic<uint64_t> g_rumble_player_starts{0};
+
+static dispatch_queue_t RumbleDiagnosticsQueue() {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("rex.input.ios.rumble-diagnostics", DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
+
+// Only touched on RumbleDiagnosticsQueue(); starts empty each process.
+static NSMutableDictionary<NSString*, id>* g_rumble_diagnostics;
+
+static void NoteRumble(NSString* key, id value) {
+  if (!key || !value) return;
+  dispatch_async(RumbleDiagnosticsQueue(), ^{
+    if (!g_rumble_diagnostics) g_rumble_diagnostics = [NSMutableDictionary new];
+    g_rumble_diagnostics[key] = value;
+    [NSUserDefaults.standardUserDefaults setObject:[g_rumble_diagnostics copy]
+                                            forKey:kRumbleDiagnosticsKey];
+  });
+}
+
+static void NoteRumbleError(NSString* stage, NSError* error) {
+  NoteRumble(@"last_error", [NSString stringWithFormat:@"%@: %@", stage,
+                                error.localizedDescription ?: @"returned nil"]);
+}
+
+static void NoteRumbleCounters() {
+  NoteRumble(@"requests", @(g_rumble_requests.load(std::memory_order_relaxed)));
+  NoteRumble(@"nonzero_requests", @(g_rumble_nonzero.load(std::memory_order_relaxed)));
+  NoteRumble(@"max_left_motor", @(g_rumble_max_left.load(std::memory_order_relaxed)));
+  NoteRumble(@"max_right_motor", @(g_rumble_max_right.load(std::memory_order_relaxed)));
+  NoteRumble(@"requests_without_controller", @(g_rumble_unrouted.load(std::memory_order_relaxed)));
+}
+
 // One haptic actuator group driven like an Xbox 360 rumble motor. A looping
 // continuous event plays at full base intensity; each motor change only sends
 // an intensity-control parameter, so the game's per-frame XInputSetState calls
@@ -65,7 +112,10 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   self = [super init];
   if (!self) return nil;
   _engine = [haptics createEngineWithLocality:locality];
-  if (!_engine) return nil;
+  if (!_engine) {
+    NoteRumbleError([@"create engine " stringByAppendingString:locality], nil);
+    return nil;
+  }
   _sharpness = sharpness;
   // A reset invalidates every player and a stop halts playback; either way
   // the next nonzero intensity starts the engine and a player again.
@@ -88,7 +138,10 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
 - (BOOL)preparePlayer {
   if (_player) return YES;
   NSError* error = nil;
-  if (![_engine startAndReturnError:&error]) return NO;
+  if (![_engine startAndReturnError:&error]) {
+    NoteRumbleError(@"start engine", error);
+    return NO;
+  }
   CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc]
       initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
   CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc]
@@ -103,9 +156,15 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event]
                                                           parameters:@[]
                                                                error:&error];
-  if (!pattern) return NO;
+  if (!pattern) {
+    NoteRumbleError(@"create pattern", error);
+    return NO;
+  }
   _player = [_engine createAdvancedPlayerWithPattern:pattern error:&error];
-  if (!_player) return NO;
+  if (!_player) {
+    NoteRumbleError(@"create player", error);
+    return NO;
+  }
   _player.loopEnabled = YES;
   return YES;
 }
@@ -132,11 +191,17 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
       // The engine may have stopped itself (for example when idle); restart
       // it once and retry with a fresh player.
       _player = nil;
-      if (![self preparePlayer] || ![_player startAtTime:CHHapticTimeImmediate error:&error]) return;
+      if (![self preparePlayer] || ![_player startAtTime:CHHapticTimeImmediate error:&error]) {
+        NoteRumbleError(@"start player", error);
+        return;
+      }
     }
     _running = YES;
+    NoteRumble(@"player_starts", @(g_rumble_player_starts.fetch_add(1, std::memory_order_relaxed) + 1));
   }
-  [_player sendParameters:@[control] atTime:CHHapticTimeImmediate error:&error];
+  if (![_player sendParameters:@[control] atTime:CHHapticTimeImmediate error:&error]) {
+    NoteRumbleError(@"send intensity", error);
+  }
   _applied = intensity;
 }
 
@@ -206,7 +271,14 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
                                                        queue:_queue];
       }
       _rumbleActive.store(_left || _mixed);
+      NoteRumble(@"haptics_mode", _left ? @"left/right grips" : _mixed ? @"single mixed" : @"engine failed");
+      NoteRumble(@"supported_localities",
+                 [[localities.allObjects sortedArrayUsingSelector:@selector(compare:)]
+                     componentsJoinedByString:@","]);
+    } else {
+      NoteRumble(@"haptics_mode", @"controller reports no haptics");
     }
+    NoteRumble(@"controller", controller.vendorName ?: controller.productCategory ?: @"unknown");
     // Enable motion sampling if supported (gyro/accel).
     if (controller.motion) {
       controller.motion.sensorsActive = YES;
@@ -548,17 +620,32 @@ X_RESULT IOSInputDriver::GetState(uint32_t user_index, X_INPUT_STATE* out_state)
 
 X_RESULT IOSInputDriver::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
   if (user_index >= HID_IOS_USER_COUNT || !vibration) return X_ERROR_BAD_ARGUMENTS;
+  // Count every request, including ones with no controller in this slot, so
+  // the diagnostics show whether the game asks for vibration at all.
+  const uint32_t left_speed = vibration->left_motor_speed;
+  const uint32_t right_speed = vibration->right_motor_speed;
+  const uint64_t requests = g_rumble_requests.fetch_add(1, std::memory_order_relaxed) + 1;
+  bool first_nonzero = false;
+  if (left_speed || right_speed) {
+    first_nonzero = g_rumble_nonzero.fetch_add(1, std::memory_order_relaxed) == 0;
+    uint32_t seen = g_rumble_max_left.load(std::memory_order_relaxed);
+    while (left_speed > seen && !g_rumble_max_left.compare_exchange_weak(seen, left_speed)) {}
+    seen = g_rumble_max_right.load(std::memory_order_relaxed);
+    while (right_speed > seen && !g_rumble_max_right.compare_exchange_weak(seen, right_speed)) {}
+  }
   std::lock_guard<std::mutex> g(mutex_);
   auto* slot = FindSlot(user_index);
+  if (!slot || !slot->ios || !slot->ios->bridge_retained) {
+    g_rumble_unrouted.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (requests == 1 || first_nonzero || requests % 120 == 0) NoteRumbleCounters();
   if (!slot) return X_ERROR_DEVICE_NOT_CONNECTED;
   if (!slot->ios || !slot->ios->bridge_retained) return X_ERROR_SUCCESS;
 
   if (@available(iOS 14.0, tvOS 14.0, *)) {
     LRIOSControllerBridge* bridge =
         (__bridge LRIOSControllerBridge*)slot->ios->bridge_retained;
-    float left  = vibration->left_motor_speed  / 65535.0f;
-    float right = vibration->right_motor_speed / 65535.0f;
-    [bridge rumbleLeft:left right:right];
+    [bridge rumbleLeft:left_speed / 65535.0f right:right_speed / 65535.0f];
   }
   return X_ERROR_SUCCESS;
 }
