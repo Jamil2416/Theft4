@@ -42,8 +42,8 @@ static UIColor *Ink(uint32_t rgb) {
 }
 @end
 
-static const NSInteger kVisibleRows = 10;
-static const CGFloat kRowHeight = 34, kHeaderHeight = 64, kFooterHeight = 40, kPanelWidth = 330;
+static const NSInteger kMaxRows = 8;  // fewer when the screen is short
+static const CGFloat kRowHeight = 28, kHeaderHeight = 44, kFooterHeight = 28, kPanelWidth = 260, kHelpHeight = 46;
 // Touchpad travel (axis units, -1...1) per selection step and per value step.
 static const CGFloat kVerticalStep = 0.22, kHorizontalStep = 0.45, kAxisLock = 0.10;
 
@@ -68,80 +68,119 @@ typedef NS_ENUM(NSInteger, Theft4SwipeAxis) { Theft4SwipeNone, Theft4SwipeVertic
     uint32_t _statusCounter;
     CFTimeInterval _statusUntil;
     // Appearance, from the menu's own Settings page.
-    NSInteger _accentRed, _accentGreen, _accentBlue, _opacity;
+    NSInteger _accentIndex, _opacity, _visibleRows;
     UIView *_accentBar;
+    CFTimeInterval _diagnosticsSaved;
 }
 
-static NSString *const kAccentRedKey = @"Theft4ModMenuAccentRed";
-static NSString *const kAccentGreenKey = @"Theft4ModMenuAccentGreen";
-static NSString *const kAccentBlueKey = @"Theft4ModMenuAccentBlue";
+static NSString *const kAccentKey = @"Theft4ModMenuAccent";
 static NSString *const kOpacityKey = @"Theft4ModMenuOpacity";
 
+// Accent choices: the colours of the rainbow. Yellow is the default.
+static NSArray<NSString *> *AccentNames(void) {
+    return @[@"Red", @"Orange", @"Yellow", @"Green", @"Blue", @"Indigo", @"Violet"];
+}
+static const uint32_t kAccentColors[] = {0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x0A84FF, 0x5E5CE6, 0xBF5AF2};
+static const NSInteger kDefaultAccent = 2;
+
 - (UIColor *)accent {
-    return [UIColor colorWithRed:_accentRed / 255.0 green:_accentGreen / 255.0 blue:_accentBlue / 255.0 alpha:1];
+    return Ink(kAccentColors[MAX(0, MIN(6, _accentIndex))]);
 }
 
 - (void)loadAppearance {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSInteger (^stored)(NSString *, NSInteger) = ^NSInteger(NSString *key, NSInteger fallback) {
-        return [defaults objectForKey:key] ? [defaults integerForKey:key] : fallback;
-    };
-    _accentRed = stored(kAccentRedKey, 242);
-    _accentGreen = stored(kAccentGreenKey, 201);
-    _accentBlue = stored(kAccentBlueKey, 76);
-    _opacity = stored(kOpacityKey, 90);
+    _accentIndex = [defaults objectForKey:kAccentKey] ? MAX(0, MIN(6, [defaults integerForKey:kAccentKey]))
+                                                      : kDefaultAccent;
+    // Opacity is chosen in 10% steps; older saved values round to the nearest.
+    const NSInteger opacity = [defaults objectForKey:kOpacityKey] ? [defaults integerForKey:kOpacityKey] : 90;
+    _opacity = MAX(0, MIN(100, (opacity + 5) / 10 * 10));
 }
 
 // Background panels follow the opacity setting; text always stays opaque.
 - (void)applyAppearance {
-    const CGFloat alpha = MAX(20, MIN(100, _opacity)) / 100.0;
+    const CGFloat alpha = _opacity / 100.0;
     _panel.backgroundColor = [Ink(0x1C1F21) colorWithAlphaComponent:alpha];
     _helpBar.backgroundColor = [Ink(0x1C1F21) colorWithAlphaComponent:alpha];
-    _header.backgroundColor = [UIColor colorWithWhite:0 alpha:MIN(1.0, alpha + 0.05)];
-    _footer.backgroundColor = [UIColor colorWithWhite:0 alpha:MIN(1.0, alpha + 0.05)];
+    _header.backgroundColor = [UIColor colorWithWhite:0 alpha:alpha];
+    _footer.backgroundColor = [UIColor colorWithWhite:0 alpha:alpha];
     _accentBar.backgroundColor = self.accent;
     [self refresh];
 }
 
-- (Theft4ModItem *)appearanceValue:(NSString *)title help:(NSString *)help ivar:(NSInteger *)ivar
-                              key:(NSString *)key minimum:(NSInteger)minimum maximum:(NSInteger)maximum
-                             step:(NSInteger)step suffix:(NSString *)suffix {
-    __weak Theft4ModMenu *weakSelf = self;
-    Theft4ModItem *item = [Theft4ModItem new];
-    item.title = title; item.help = help; item.kind = Theft4ModItemValue;
-    item.minimum = minimum; item.maximum = maximum; item.step = step;
-    item.getValue = ^NSInteger { return weakSelf ? *ivar : 0; };
-    item.setValue = ^(NSInteger value) {
-        Theft4ModMenu *menu = weakSelf;
-        if (!menu) return;
-        *ivar = value;
-        [NSUserDefaults.standardUserDefaults setInteger:value forKey:key];
-        [menu applyAppearance];
-    };
-    item.format = ^NSString *(NSInteger v) { return [NSString stringWithFormat:@"%ld%@", (long)v, suffix]; };
-    return item;
-}
-
 - (Theft4ModItem *)settingsMenu {
     __weak Theft4ModMenu *weakSelf = self;
+    NSMutableArray<Theft4ModItem *> *colours = [NSMutableArray new];
+    for (NSInteger i = 0; i < 7; ++i) {
+        // One row per colour; the chosen one is marked [+].
+        [colours addObject:[Theft4ModItem toggle:AccentNames()[i] help:@"Highlight colour"
+            isOn:^BOOL { Theft4ModMenu *menu = weakSelf; return menu && menu->_accentIndex == i; }
+            setOn:^(BOOL on) {
+                Theft4ModMenu *menu = weakSelf;
+                if (!menu) return;
+                menu->_accentIndex = i;
+                [NSUserDefaults.standardUserDefaults setInteger:i forKey:kAccentKey];
+                [menu applyAppearance];
+            }]];
+    }
+    Theft4ModItem *opacity = [Theft4ModItem new];
+    opacity.title = @"Menu Opacity";
+    opacity.help = @"Background transparency; text stays readable";
+    opacity.kind = Theft4ModItemValue;
+    opacity.minimum = 0; opacity.maximum = 100; opacity.step = 10;
+    opacity.getValue = ^NSInteger { Theft4ModMenu *menu = weakSelf; return menu ? menu->_opacity : 90; };
+    opacity.setValue = ^(NSInteger value) {
+        Theft4ModMenu *menu = weakSelf;
+        if (!menu) return;
+        menu->_opacity = value;
+        [NSUserDefaults.standardUserDefaults setInteger:value forKey:kOpacityKey];
+        [menu applyAppearance];
+    };
+    opacity.format = ^NSString *(NSInteger v) { return [NSString stringWithFormat:@"%ld%%", (long)v]; };
     return [Theft4ModItem submenu:@"Settings" help:@"Menu colour and transparency" children:@[
-        [self appearanceValue:@"Accent Red" help:@"Highlight colour, red" ivar:&_accentRed
-            key:kAccentRedKey minimum:0 maximum:255 step:15 suffix:@""],
-        [self appearanceValue:@"Accent Green" help:@"Highlight colour, green" ivar:&_accentGreen
-            key:kAccentGreenKey minimum:0 maximum:255 step:15 suffix:@""],
-        [self appearanceValue:@"Accent Blue" help:@"Highlight colour, blue" ivar:&_accentBlue
-            key:kAccentBlueKey minimum:0 maximum:255 step:15 suffix:@""],
-        [self appearanceValue:@"Menu Opacity" help:@"Background transparency" ivar:&_opacity
-            key:kOpacityKey minimum:20 maximum:100 step:5 suffix:@"%"],
-        [Theft4ModItem action:@"Reset Appearance" help:@"Amber accent, 90% opacity" run:^{
-            Theft4ModMenu *menu = weakSelf;
-            if (!menu) return;
-            for (NSString *key in @[kAccentRedKey, kAccentGreenKey, kAccentBlueKey, kOpacityKey])
-                [NSUserDefaults.standardUserDefaults removeObjectForKey:key];
-            [menu loadAppearance];
-            [menu applyAppearance];
-        }],
+        [Theft4ModItem submenu:@"Accent Colour" help:@"Highlight colour" children:colours],
+        opacity,
+        [Theft4ModItem submenu:@"Diagnostics" help:@"What the game reports to the mods" children:[self diagnosticsItems]],
     ]];
+}
+
+// Read-only rows: select one to read its state in the help line.
+- (NSArray<Theft4ModItem *> *)diagnosticsItems {
+    Theft4ModItem *(^row)(NSString *, NSString *(^)(void)) = ^Theft4ModItem *(NSString *title, NSString *(^text)(void)) {
+        Theft4ModItem *item = [Theft4ModItem action:title help:nil run:nil];
+        item.helpText = text;
+        return item;
+    };
+    return @[
+        row(@"Mods", ^NSString * { return [Theft4ModMenu trainerDiagnostics]; }),
+        row(@"Episode Start", ^NSString * { return [Theft4ModMenu episodeDiagnostics]; }),
+        row(@"Controller Rumble", ^NSString * {
+            NSDictionary *rumble = [NSUserDefaults.standardUserDefaults dictionaryForKey:@"Theft4RumbleDiagnostics"];
+            if (!rumble.count) return @"No rumble requests yet";
+            return [NSString stringWithFormat:@"%@ requests, %@ nonzero · mode %@ · %@",
+                rumble[@"requests"] ?: @0, rumble[@"nonzero_requests"] ?: @0,
+                rumble[@"haptics_mode"] ?: @"?", rumble[@"last_error"] ?: @"no errors"];
+        }),
+    ];
+}
+
++ (NSString *)trainerDiagnostics {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    char text[256] = {0};
+    theft4_trainer_diagnostics(text, sizeof(text));
+    return [NSString stringWithUTF8String:text] ?: @"";
+#else
+    return @"Not available in this build";
+#endif
+}
+
++ (NSString *)episodeDiagnostics {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    char text[256] = {0};
+    theft4_episode_diagnostics(text, sizeof(text));
+    return [NSString stringWithUTF8String:text] ?: @"";
+#else
+    return @"Not available in this build";
+#endif
 }
 
 #pragma mark - Persistence
@@ -456,6 +495,7 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
 - (instancetype)initWithOverlays:(NSArray<Theft4ModItem *> *)overlays {
     self = [super initWithFrame:CGRectZero];
     if (!self) return nil;
+    _visibleRows = kMaxRows;
     [self loadAppearance];
     _root = [self buildRootWithOverlays:overlays];
     _stack = [NSMutableArray arrayWithObject:_root];
@@ -473,10 +513,10 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     _header = [UIView new];
     _header.backgroundColor = UIColor.blackColor;
     [_panel addSubview:_header];
-    _title = MenuLabel(24, UIFontWeightBold, YES);
+    _title = MenuLabel(17, UIFontWeightBold, YES);
     _title.textAlignment = NSTextAlignmentCenter;
     [_header addSubview:_title];
-    _subtitle = MenuLabel(10, UIFontWeightMedium, YES);
+    _subtitle = MenuLabel(9, UIFontWeightMedium, YES);
     _subtitle.textAlignment = NSTextAlignmentCenter;
     _subtitle.textColor = Ink(0x9A9A9A);
     _subtitle.text = @"THEFT4";
@@ -485,11 +525,11 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     [_panel addSubview:_accentBar];
 
     NSMutableArray *rows = [NSMutableArray new], *titles = [NSMutableArray new], *values = [NSMutableArray new];
-    for (NSInteger i = 0; i < kVisibleRows; ++i) {
+    for (NSInteger i = 0; i < kMaxRows; ++i) {
         UIView *row = [UIView new];
         row.tag = i;
-        UILabel *title = MenuLabel(15, UIFontWeightRegular, NO);
-        UILabel *value = MenuLabel(14, UIFontWeightSemibold, YES);
+        UILabel *title = MenuLabel(13, UIFontWeightRegular, NO);
+        UILabel *value = MenuLabel(12, UIFontWeightSemibold, YES);
         value.textAlignment = NSTextAlignmentRight;
         [row addSubview:title];
         [row addSubview:value];
@@ -502,19 +542,20 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     _footer = [UIView new];
     _footer.backgroundColor = UIColor.blackColor;
     [_panel addSubview:_footer];
-    _counter = MenuLabel(18, UIFontWeightBold, YES);
+    _counter = MenuLabel(13, UIFontWeightBold, YES);
     _counter.textAlignment = NSTextAlignmentCenter;
     [_footer addSubview:_counter];
 
     _helpBar = [UIView new];
     _helpBar.backgroundColor = [Ink(0x2A2D2E) colorWithAlphaComponent:0.90];
     [self addSubview:_helpBar];
-    _help = MenuLabel(13, UIFontWeightRegular, NO);
-    _help.numberOfLines = 2;
+    _help = MenuLabel(11, UIFontWeightRegular, NO);
+    _help.numberOfLines = 5;
+    _help.adjustsFontSizeToFitWidth = NO;
     [_helpBar addSubview:_help];
-    _status = MenuLabel(13, UIFontWeightSemibold, NO);
+    _status = MenuLabel(11, UIFontWeightSemibold, NO);
     _status.textColor = Ink(0x8FD18F);
-    _status.numberOfLines = 2;
+    _status.numberOfLines = 1;
     [_helpBar addSubview:_status];
 
     UITapGestureRecognizer *backTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(back)];
@@ -529,30 +570,48 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     return hit == self ? nil : hit;
 }
 
+- (void)setTopOffset:(CGFloat)topOffset {
+    if (_topOffset == topOffset) return;
+    _topOffset = topOffset;
+    [self setNeedsLayout];
+}
+
+// Top right, below the frame-time graph or FPS counter when one is shown.
+// Rows are dropped (down to four) when the screen is too short for eight.
 - (void)layoutSubviews {
     [super layoutSubviews];
     const UIEdgeInsets safe = self.safeAreaInsets;
-    const CGFloat width = MIN(kPanelWidth, self.bounds.size.width - safe.left - safe.right - 32);
-    const CGFloat rowsHeight = kRowHeight * kVisibleRows;
-    const CGFloat height = kHeaderHeight + rowsHeight + kFooterHeight;
-    const CGFloat x = safe.left + 16;
-    const CGFloat y = MAX(safe.top + 12, (self.bounds.size.height - height - 70) / 2);
+    const CGFloat width = MIN(kPanelWidth, self.bounds.size.width - safe.left - safe.right - 20);
+    const CGFloat y = safe.top + _topOffset;
+    const CGFloat room = self.bounds.size.height - safe.bottom - 10 - y - kHeaderHeight - kFooterHeight -
+                         6 - kHelpHeight;
+    const NSInteger rows = MAX(4, MIN(kMaxRows, (NSInteger)floor(room / kRowHeight)));
+    if (rows != _visibleRows) {
+        _visibleRows = rows;
+        [self refresh];
+    }
+    const CGFloat height = kHeaderHeight + kRowHeight * rows + kFooterHeight;
+    const CGFloat x = self.bounds.size.width - safe.right - 10 - width;
     _panel.frame = CGRectMake(x, y, width, height);
     _header.frame = CGRectMake(0, 0, width, kHeaderHeight);
     _accentBar.frame = CGRectMake(0, kHeaderHeight - 2, width, 2);
-    _title.frame = CGRectMake(12, 8, width - 24, 32);
-    _subtitle.frame = CGRectMake(12, 40, width - 24, 16);
-    for (NSInteger i = 0; i < kVisibleRows; ++i) {
-        UIView *row = _rows[i];
-        row.frame = CGRectMake(0, kHeaderHeight + i * kRowHeight, width, kRowHeight);
-        _rowTitles[i].frame = CGRectMake(14, 0, width * 0.62, kRowHeight);
-        _rowValues[i].frame = CGRectMake(width * 0.62, 0, width * 0.38 - 14, kRowHeight);
+    _title.frame = CGRectMake(10, 5, width - 20, 22);
+    _subtitle.frame = CGRectMake(10, 27, width - 20, 12);
+    for (NSInteger i = 0; i < kMaxRows; ++i) {
+        _rows[i].frame = CGRectMake(0, kHeaderHeight + i * kRowHeight, width, kRowHeight);
+        _rowTitles[i].frame = CGRectMake(10, 0, width * 0.60, kRowHeight);
+        _rowValues[i].frame = CGRectMake(width * 0.60, 0, width * 0.40 - 10, kRowHeight);
     }
     _footer.frame = CGRectMake(0, height - kFooterHeight, width, kFooterHeight);
     _counter.frame = _footer.bounds;
-    _helpBar.frame = CGRectMake(x, CGRectGetMaxY(_panel.frame) + 8, width, 60);
-    _help.frame = CGRectMake(12, 4, width - 24, 26);
-    _status.frame = CGRectMake(12, 30, width - 24, 26);
+    // The help line grows to fit its text (up to five lines); the newest
+    // result sits under it while it is fresh.
+    const CGFloat helpHeight = MIN(70.0, ceil([_help sizeThatFits:CGSizeMake(width - 20, CGFLOAT_MAX)].height));
+    const CGFloat statusHeight = _status.hidden ? 0 : 15;
+    _helpBar.frame = CGRectMake(x, CGRectGetMaxY(_panel.frame) + 6, width, 4 + helpHeight + statusHeight + 4);
+    _help.frame = CGRectMake(10, 4, width - 20, helpHeight);
+    _status.frame = CGRectMake(10, 4 + helpHeight, width - 20, statusHeight);
+    _helpBar.hidden = !_help.text.length && _status.hidden;
 }
 
 - (Theft4ModItem *)level { return _stack.lastObject; }
@@ -579,16 +638,17 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     const NSInteger count = (NSInteger)items.count;
     NSInteger selected = MAX(0, MIN(self.selected, count - 1));
     [self setSelected:selected];
+    const NSInteger visible = MAX(1, _visibleRows);
     if (selected < _firstVisible) _firstVisible = selected;
-    if (selected >= _firstVisible + kVisibleRows) _firstVisible = selected - kVisibleRows + 1;
-    _firstVisible = MAX(0, MIN(_firstVisible, MAX(0, count - kVisibleRows)));
+    if (selected >= _firstVisible + visible) _firstVisible = selected - visible + 1;
+    _firstVisible = MAX(0, MIN(_firstVisible, MAX(0, count - visible)));
 
     _title.text = level.title.uppercaseString;
     _subtitle.text = _stack.count > 1 ? @"‹ BACK  ·  THEFT4" : @"THEFT4";
-    for (NSInteger i = 0; i < kVisibleRows; ++i) {
+    for (NSInteger i = 0; i < kMaxRows; ++i) {
         const NSInteger index = _firstVisible + i;
         UIView *row = _rows[i];
-        if (index >= count) { row.hidden = YES; continue; }
+        if (i >= visible || index >= count) { row.hidden = YES; continue; }
         row.hidden = NO;
         Theft4ModItem *item = items[index];
         const BOOL isSelected = index == selected;
@@ -602,10 +662,12 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
                                  : isSelected ? accent : Ink(0xBDBDBD);
     }
     _counter.text = count ? [NSString stringWithFormat:@"%ld / %ld", (long)selected + 1, (long)count] : @"0 / 0";
-    NSString *help = count ? items[selected].help : nil;
-    if (!TRAINER_ACTIVE()) help = @"Mods start once you are in Liberty City";
+    Theft4ModItem *current = count ? items[selected] : nil;
+    NSString *help = current.helpText ? current.helpText() : current.help;
+    if (!TRAINER_ACTIVE() && !current.helpText) help = @"Mods start once you are in Liberty City";
     _help.text = help.length ? [@"(i) " stringByAppendingString:help] : @"";
     _status.hidden = CACurrentMediaTime() > _statusUntil;
+    [self setNeedsLayout];
 }
 
 #pragma mark - Navigation
@@ -725,6 +787,15 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
 
 - (void)pollController {
     [self showTrainerStatus];
+    // Keep the latest diagnostics for the next launch's log export.
+    const CFTimeInterval now = CACurrentMediaTime();
+    if (now - _diagnosticsSaved > 2.0) {
+        _diagnosticsSaved = now;
+        [NSUserDefaults.standardUserDefaults setObject:[Theft4ModMenu trainerDiagnostics]
+                                                forKey:@"Theft4TrainerDiagnosticsText"];
+        [NSUserDefaults.standardUserDefaults setObject:[Theft4ModMenu episodeDiagnostics]
+                                                forKey:@"Theft4EpisodeDiagnosticsText"];
+    }
     GCDualSenseGamepad *pad = self.dualSense;
     if (!pad) { _wasClicked = _wasTouched = NO; return; }
     const BOOL clicked = pad.touchpadButton.pressed;

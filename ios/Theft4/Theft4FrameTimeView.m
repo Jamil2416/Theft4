@@ -8,9 +8,11 @@
     BOOL _captureFailed;
     NSString *_configurationLine;
     NSString *_gapLine;
+    double _fps;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
+    _fps = -1;
     self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.68];
     self.layer.cornerRadius = 7;
     self.clipsToBounds = YES;
@@ -55,6 +57,11 @@
     _snapshot.count = MIN(_snapshot.count, THEFT4_FRAME_TIME_SAMPLES);
     [self setNeedsDisplay];
 }
+- (void)setFramesPerSecond:(double)fps {
+    if (fps == _fps) return;
+    _fps = fps;
+    [self setNeedsDisplay];
+}
 - (void)setConfigurationLine:(NSString *)configuration gapLine:(NSString *)gap {
     _configurationLine = [configuration copy];
     _gapLine = [gap copy];
@@ -69,9 +76,10 @@
     if (pending) last = _snapshot.pending_ms;
     double peak = last;
     for (uint32_t i = 0; i < _snapshot.count; ++i) peak = MAX(peak, _snapshot.milliseconds[i]);
+    NSString *fps = _fps >= 0 ? [NSString stringWithFormat:@" · %.0f FPS", _fps] : @"";
     NSString *title = (last > 0) ?
-        [NSString stringWithFormat:@"%5.1f ms%@  peak %.1f", last, pending ? @"+" : @" ", peak] :
-        @"Frame time · waiting";
+        [NSString stringWithFormat:@"%5.1f ms%@ peak %.1f%@", last, pending ? @"+" : @" ", peak, fps] :
+        [@"Frame time · waiting" stringByAppendingString:fps];
     NSDictionary *text = @{NSFontAttributeName:[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium],
                            NSForegroundColorAttributeName:UIColor.whiteColor};
     [title drawAtPoint:CGPointMake(9, 6) withAttributes:text];

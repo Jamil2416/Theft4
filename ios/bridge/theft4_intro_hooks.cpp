@@ -1,5 +1,7 @@
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <span>
 
@@ -91,25 +93,63 @@ uint32_t InstalledContentMask(PPCContext& ctx, uint8_t* base) {
 }
 }  // namespace
 
+namespace {
+// What the hook saw, for the mod menu's Diagnostics page.
+std::atomic<uint32_t> episode_calls{0};
+std::atomic<int32_t> episode_requested{-2}, episode_retail{-99}, episode_result{-99};
+std::atomic<uint32_t> episode_mask{0};
+std::atomic<bool> episode_applied{false};
+// A TBoGT request waits through this many calls for the game to report the
+// episode installed (content can finish loading after the first call).
+constexpr uint32_t kEpisodeAttempts = 20;
+std::atomic<uint32_t> episode_attempts{0};
+}  // namespace
+
 extern "C" void theft4_episode_start_configure(int32_t content_id) {
   requested_content.store(content_id, std::memory_order_relaxed);
+  episode_requested.store(content_id, std::memory_order_relaxed);
+  episode_attempts.store(0, std::memory_order_relaxed);
+}
+
+extern "C" void theft4_episode_diagnostics(char* text, size_t capacity) {
+  if (!text || !capacity) return;
+  const int32_t requested = episode_requested.load(std::memory_order_relaxed);
+  std::snprintf(text, capacity,
+                "Asked %s · start checks %u · game result %d · installed mask %04X · sent %d%s",
+                requested == -2 ? "nothing" : requested == -1 ? "GTA IV" : "TBoGT (4)",
+                episode_calls.load(std::memory_order_relaxed),
+                int(episode_retail.load(std::memory_order_relaxed)),
+                unsigned(episode_mask.load(std::memory_order_relaxed)),
+                int(episode_result.load(std::memory_order_relaxed)),
+                episode_applied.load(std::memory_order_relaxed) ? " · TBoGT screen requested" : "");
 }
 
 extern "C" void sub_82241428(PPCContext& ctx, uint8_t* base) {
   // Run the retail check first so the profile's "told" mask stays current.
   __imp__sub_82241428(ctx, base);
   const int32_t retail = ctx.r3.s32;
-  // One decision per launch; later title visits keep retail behaviour.
-  const int32_t requested = requested_content.exchange(-2, std::memory_order_relaxed);
-  if (requested == -2) return;
+  episode_calls.fetch_add(1, std::memory_order_relaxed);
+  episode_retail.store(retail, std::memory_order_relaxed);
+  const int32_t requested = requested_content.load(std::memory_order_relaxed);
+  if (requested == -2) return;  // keep the retail behaviour
   int32_t result = kNoEpisode;
   if (requested > 0 && requested < 16) {
     const uint32_t installed = InstalledContentMask(ctx, base);
-    if (installed & (1u << requested)) result = requested;
+    episode_mask.store(installed, std::memory_order_relaxed);
+    if (installed & (1u << requested)) {
+      result = requested;
+      requested_content.store(-2, std::memory_order_relaxed);  // done; later visits are retail
+      episode_applied.store(true, std::memory_order_relaxed);
+    } else if (episode_attempts.fetch_add(1, std::memory_order_relaxed) + 1 >= kEpisodeAttempts) {
+      requested_content.store(-2, std::memory_order_relaxed);  // give up; the title shows as usual
+    }
     REXLOG_INFO("Theft4 episode start: requested={} installed-mask={:04X} result={}",
                 requested, installed, result);
   } else {
+    // Enter Liberty City: one normal title, then retail behaviour.
+    requested_content.store(-2, std::memory_order_relaxed);
     REXLOG_INFO("Theft4 episode start: normal title (retail result {} not shown)", retail);
   }
+  episode_result.store(result, std::memory_order_relaxed);
   ctx.r3.s64 = result;
 }

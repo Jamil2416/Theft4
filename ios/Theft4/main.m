@@ -2458,6 +2458,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             [rumbleText appendFormat:@" %@=%@;", key, rumble[key]];
         [rumbleText appendFormat:@"\nController vibration test: %@\n",
             [rumbleDefaults stringForKey:@"Theft4RumbleLauncherTest"] ?: @"not run"];
+        // Saved by the mod menu every two seconds during the last game session.
+        [rumbleText appendFormat:@"Mods (last game session): %@\nEpisode start (last game session): %@\n",
+            [rumbleDefaults stringForKey:@"Theft4TrainerDiagnosticsText"] ?: @"nothing recorded",
+            [rumbleDefaults stringForKey:@"Theft4EpisodeDiagnosticsText"] ?: @"nothing recorded"];
         success = success && Theft4WriteString(stream, rumbleText, &budget);
 
         NSURL *applicationSupport = [supportURL URLByDeletingLastPathComponent];
@@ -2794,7 +2798,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [_cpuUsageView setMonitoringActive:(_gamePresentation && !_launcherDuringGame && _sceneActive && _showCPUUsage.on)];
     BOOL visible = _gamePresentation && !_launcherDuringGame && _sceneActive && _showFrameTime.on;
     _frameTimeView.hidden = !visible;
-    _frameTimeTop.constant = _showFPS.on ? 52 : 10;
+    // With the graph on, FPS is part of its title; the separate label shows
+    // only without the graph. The mod menu sits below whichever is shown.
+    const BOOL fpsLabelShown = sampleFPS && !visible;
+    _fpsLabel.hidden = !fpsLabelShown;
+    [_frameTimeView setFramesPerSecond:sampleFPS ? MAX(0.0, _fpsLabel.text.doubleValue) : -1];
+    _frameTimeTop.constant = 10;
+    _modMenu.topOffset = visible ? 10 + 126 + 8 : fpsLabelShown ? 10 + 32 + 8 : 10;
     theft4_frame_time_set_enabled(visible);
     if (!visible) {
         [_frameTimeTimer invalidate];
@@ -3242,13 +3252,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // background only. Five minutes fits16384 records at the30FPS game cap.
     if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureStartTime >= _publicationCaptureLimit)
         [self stopPublicationCapture];
-    if (_fpsLabel.hidden) return;
+    if (!_showFPS.on) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
     const CFTimeInterval now = CACurrentMediaTime();
     const CFTimeInterval elapsed = now - _fpsLastTime;
     if (elapsed >= 0.2) {
         const double fps = (double)(frames - _fpsLastFrames) / elapsed;
+        // Shown in the frame-time graph when it is on, otherwise on its own.
         _fpsLabel.text = [NSString stringWithFormat:@"%4.1f FPS", fps];
+        [_frameTimeView setFramesPerSecond:fps];
         _fpsLastFrames = frames;
         _fpsLastTime = now;
     }
@@ -3477,7 +3489,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _start.enabled = NO;
     _ballad.enabled = NO;
     // Mod switches saved from the launcher or an earlier in-game session.
-    if (execute) [Theft4ModMenu applyPersistedSettings];
+    if (execute) {
+        [Theft4ModMenu applyPersistedSettings];
+        // Diagnostics describe one game session; drop the previous one's.
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4TrainerDiagnosticsText"];
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Theft4EpisodeDiagnosticsText"];
+    }
     if (execute) _executionAttempted = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Retain the controller through completion; all UIKit/core callbacks

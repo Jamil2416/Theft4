@@ -17,6 +17,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <mutex>
@@ -172,6 +173,16 @@ std::array<std::atomic<uint32_t>, size_t(N::COUNT)> handlers{};
 std::atomic<uint32_t> wait_thunk{0};
 std::mutex registration_mutex;
 
+// Diagnostics: each step from registration to a frame of trainer work.
+std::atomic<uint32_t> diag_registrations{0};   // every command the game registered
+std::atomic<uint32_t> diag_unreadable_names{0};
+std::atomic<bool> diag_wait_failed{false};     // WAIT seen but could not be wrapped
+std::atomic<uint64_t> diag_wrapper_calls{0};   // WAIT calls that reached the wrapper
+std::atomic<uint64_t> diag_frames{0};          // frames the trainer ran
+std::atomic<int> diag_playing{-1};             // last IS_PLAYER_PLAYING result
+std::atomic<uint64_t> diag_failed_calls{0};
+std::atomic<int> diag_last_failed{-1};         // N index of the last command that could not run
+
 // One argument cell: a plain value, or a pointer to output slot `slot` of
 // the scratch frame (pre-filled with `value`).
 struct Arg {
@@ -204,9 +215,12 @@ class Script {
     auto* runtime = rex::Runtime::instance();
     auto* dispatcher = runtime ? runtime->function_dispatcher() : nullptr;
     auto* function = dispatcher && handler ? dispatcher->GetFunction(handler) : nullptr;
-    if (!function || args.size() > 16 || parent_.r1.u32 < 0x1000) return false;
     const uint32_t frame = (parent_.r1.u32 - 0x400u) & ~15u;
-    if (!Span(base_, frame, 0x400, true)) return false;
+    if (!function || args.size() > 16 || parent_.r1.u32 < 0x1000 || !Span(base_, frame, 0x400, true)) {
+      diag_failed_calls.fetch_add(1, std::memory_order_relaxed);
+      diag_last_failed.store(int(name), std::memory_order_relaxed);
+      return false;
+    }
     const uint32_t context = frame + 0x80, result = frame + 0xC0, arguments = frame + 0xD0,
                    outputs = frame + 0x140;
     Write(base_, frame, parent_.r1.u32);
@@ -961,10 +975,12 @@ void Run(PPCContext& ctx, uint8_t* base) {
   t.dt = state.last_run ? std::min(float(now - state.last_run) / 1000.0f, 0.1f) : 0.016f;
   state.last_run = now;
   last_tick_ms.store(now, std::memory_order_release);
+  diag_frames.fetch_add(1, std::memory_order_relaxed);
 
   if (!s.Call(N::GET_PLAYER_ID)) return;
   t.player = s.Ret();
   s.Call(N::IS_PLAYER_PLAYING, {t.player});
+  diag_playing.store(s.True() ? 1 : 0, std::memory_order_relaxed);
   if (!s.True()) return;
   s.Call(N::GET_PLAYER_CHAR, {t.player, Arg::Out(0)});
   t.ped = s.Out(0);
@@ -995,6 +1011,7 @@ void Run(PPCContext& ctx, uint8_t* base) {
 }
 
 void WaitWrapper(PPCContext& ctx, uint8_t* base) {
+  diag_wrapper_calls.fetch_add(1, std::memory_order_relaxed);
   if (!state.inside) {
     state.inside = true;
     Run(ctx, base);
@@ -1045,6 +1062,28 @@ uint32_t theft4_trainer_status(char* message, size_t capacity) {
   return status_counter.load(std::memory_order_acquire);
 }
 
+void theft4_trainer_diagnostics(char* text, size_t capacity) {
+  if (!text || !capacity) return;
+  size_t found = 0;
+  for (const auto& handler : handlers) found += handler.load(std::memory_order_relaxed) ? 1 : 0;
+  const uint32_t registered = diag_registrations.load(std::memory_order_relaxed);
+  const char* wait = wait_thunk.load(std::memory_order_relaxed) ? "WAIT wrapped"
+                   : diag_wait_failed.load(std::memory_order_relaxed) ? "WAIT wrap FAILED"
+                   : handlers[size_t(N::WAIT)].load(std::memory_order_relaxed) ? "WAIT not wrapped"
+                   : "WAIT not seen";
+  const int playing = diag_playing.load(std::memory_order_relaxed);
+  const int failed = diag_last_failed.load(std::memory_order_relaxed);
+  std::snprintf(text, capacity,
+                "Cmds %u (%zu/%zu used, %u unreadable) · %s · WAIT calls %llu · frames %llu · "
+                "playing %s · failed calls %llu%s%s",
+                registered, found, kNames.size(), diag_unreadable_names.load(std::memory_order_relaxed),
+                wait, (unsigned long long)diag_wrapper_calls.load(std::memory_order_relaxed),
+                (unsigned long long)diag_frames.load(std::memory_order_relaxed),
+                playing < 0 ? "?" : playing ? "yes" : "no",
+                (unsigned long long)diag_failed_calls.load(std::memory_order_relaxed),
+                failed >= 0 ? " last " : "", failed >= 0 ? kNames[size_t(failed)].data() : "");
+}
+
 int theft4_trainer_active(void) {
   const uint64_t last = last_tick_ms.load(std::memory_order_acquire);
   return wait_thunk.load(std::memory_order_acquire) && last && NowMs() - last < 2000 ? 1 : 0;
@@ -1055,7 +1094,9 @@ int theft4_trainer_active(void) {
 // Script command registration: record the handlers the trainer uses and put
 // the WAIT wrapper in front of the game's WAIT.
 extern "C" void sub_82845600(PPCContext& ctx, uint8_t* base) {
+  diag_registrations.fetch_add(1, std::memory_order_relaxed);
   const std::string name = GuestString(base, ctx.r3.u32);
+  if (name.empty()) diag_unreadable_names.fetch_add(1, std::memory_order_relaxed);
   if (!name.empty()) {
     for (size_t i = 0; i < kNames.size(); ++i) {
       if (kNames[i] != name) continue;
@@ -1073,6 +1114,7 @@ extern "C" void sub_82845600(PPCContext& ctx, uint8_t* base) {
           ctx.r4.u32 = thunk;
           REXLOG_INFO("Theft4 trainer: WAIT {:08X} wrapped by thunk {:08X}", handlers[i].load(), thunk);
         } else {
+          diag_wait_failed.store(true, std::memory_order_relaxed);
           REXLOG_ERROR("Theft4 trainer: could not wrap WAIT; trainer inactive");
         }
       }

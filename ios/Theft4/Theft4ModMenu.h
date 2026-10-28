@@ -12,6 +12,8 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 @interface Theft4ModItem : NSObject
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) NSString *help;
+// When set, the help line shows this instead of help, read on every refresh.
+@property(nonatomic, copy) NSString *(^helpText)(void);
 @property(nonatomic) Theft4ModItemKind kind;
 @property(nonatomic, copy) NSArray<Theft4ModItem *> *children;
 @property(nonatomic, copy) BOOL (^isOn)(void);
@@ -39,6 +41,9 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 - (void)setOpen:(BOOL)open;
 // Touchpad polling runs only while the game is presented.
 @property(nonatomic) BOOL gameActive;
+// Points below the safe area's top edge where the menu starts, so it sits
+// under the frame-time graph or FPS counter when they are shown.
+@property(nonatomic) CGFloat topOffset;
 // Called after the player changes a persistent setting in game.
 @property(nonatomic, copy) void (^persistentSettingChanged)(NSString *defaultsKey, BOOL on);
 

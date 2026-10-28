@@ -148,6 +148,8 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     NoteRumbleError([@"create engine " stringByAppendingString:_locality], nil);
     return NO;
   }
+  // Haptics only: the engine never joins or changes the game's audio session.
+  _engine.playsHapticsOnly = YES;
   // A reset invalidates every player and a stop halts playback; either way
   // the next nonzero intensity starts the engine and a player again.
   __weak LRIOSRumbleChannel* weakSelf = self;
@@ -167,8 +169,21 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   return YES;
 }
 
+// Engines are created and started on the main thread, as the launcher's
+// vibration test does; that test works while starts from this queue kept
+// failing with CoreHaptics -4810 (server init failed). Nothing on the main
+// thread ever waits for this queue, so the synchronous hop cannot deadlock.
 - (BOOL)startEngine {
   if (_failed && CACurrentMediaTime() < _retryAfter) return NO;
+  __block BOOL started = NO;
+  dispatch_block_t work = ^{ started = [self startEngineOnMainThread]; };
+  if (NSThread.isMainThread) work();
+  else dispatch_sync(dispatch_get_main_queue(), work);
+  NoteRumble(@"engine_thread", @"main");
+  return started;
+}
+
+- (BOOL)startEngineOnMainThread {
   NSError* error = nil;
   if (_engine && [_engine startAndReturnError:&error]) return YES;
   if (_engine) NoteRumbleError([@"start engine " stringByAppendingString:_locality], error);

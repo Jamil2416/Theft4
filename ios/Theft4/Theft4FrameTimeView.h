@@ -6,4 +6,6 @@
 - (void)setConfigurationLine:(NSString *)configuration gapLine:(NSString *)gap;
 - (void)setCaptureRequested:(BOOL)requested;
 - (void)setCaptureCompleted:(BOOL)success;
+// Frames per second shown after the peak; negative hides it.
+- (void)setFramesPerSecond:(double)fps;
 @end

@@ -246,6 +246,13 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _startButton = Action(@"ENTER LIBERTY CITY", YES);
     _startButton.accessibilityIdentifier = @"game.start";
     _balladButton = Action(@"START THE BALLAD", YES);
+    {
+        // The Ballad of Gay Tony's menu pink, with white text.
+        UIButtonConfiguration *config = _balladButton.configuration;
+        config.background.backgroundColor = Ink(0xD91A6D);
+        config.baseForegroundColor = UIColor.whiteColor;
+        _balladButton.configuration = config;
+    }
     _balladButton.accessibilityIdentifier = @"game.start.tbogt";
     _balladButton.accessibilityLabel = @"Start The Ballad of Gay Tony";
     _balladButton.enabled = NO;
