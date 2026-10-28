@@ -758,6 +758,7 @@ CMakeUserPresets.json
 !/.github/workflows/repository-checks.yml
 !/.github/workflows/build-macos.yml
 !/.github/workflows/build-ios-ipa.yml
+!/.github/workflows/build-ios-ipa-build.yml
 !/.github/workflows/build-windows-stager.yml
 !/.github/IOS_RELEASE_NOTES_TEMPLATE.md
 
