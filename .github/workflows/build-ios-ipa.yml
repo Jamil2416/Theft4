@@ -3,7 +3,8 @@ name: iOS sideload IPA
 # Builds the public sideload IPA with tools/build_ios_release.sh on a hosted
 # Mac, following docs/IOS_RELEASE_BUILD.md and docs/IOS_GAME_STARTUP.md. Uses
 # no secrets, no signing identity and no game data; the artifact holds only
-# the IPA and its SHA-256 file.
+# the IPA and its SHA-256 file. A cancelled run can be restarted with Re-run
+# jobs on its page, or from the Actions tab with Run workflow.
 
 on:
   push:
