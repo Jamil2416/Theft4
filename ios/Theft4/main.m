@@ -587,7 +587,10 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)enterLibertyCity;
 - (void)startTheBallad;
 - (NSString *)tbogtUnavailableReason;
-- (BOOL)canStartFromLauncher;
+- (BOOL)isInGame;
+- (void)showRecordingsInFiles;
+- (void)confirmReturnToStartMenu;
+- (void)exportLogCaptureSharing:(BOOL)share;
 - (void)refreshEpisodeAvailability;
 - (void)createModMenu;
 - (void)openModMenu;
@@ -2360,9 +2363,17 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)downloadLatestLogCapture {
-    if (!_supportURL || !_downloadLogButton.enabled) return;
+    if (!_downloadLogButton.enabled) return;
+    [self exportLogCaptureSharing:YES];
+}
+
+// Writes the log bundle to On My iPad/Theft4/Diagnostics. The launcher's
+// download button then offers it in a share sheet; a finished 30-second
+// capture saves it silently during play.
+- (void)exportLogCaptureSharing:(BOOL)share {
+    if (!_supportURL) return;
     [self record:@"diagnostics.export_requested"];
-    _downloadLogButton.enabled = NO;
+    if (share) _downloadLogButton.enabled = NO;
     NSURL *supportURL = [_supportURL copy];
     NSURL *lifecycleURL = [_logURL copy];
     BOOL performanceCapture = _performanceCapture.on;
@@ -2398,6 +2409,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!documents || ![fm createDirectoryAtURL:diagnosticsURL withIntermediateDirectories:YES
                                          attributes:nil error:&error]) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (!share) { [self showCaptureNotice:@"The capture could not be saved to Files."]; return; }
                 self->_downloadLogButton.enabled = YES;
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
                     message:error.localizedDescription ?: @"The Files folder is unavailable."
@@ -2591,6 +2603,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!success) {
             [fm removeItemAtURL:outputURL error:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (!share) { [self showCaptureNotice:@"The capture could not be saved to Files."]; return; }
                 self->_downloadLogButton.enabled = YES;
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
                     message:@"The diagnostic bundle could not be written."
@@ -2603,15 +2616,19 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_downloadLogButton.enabled = YES;
             [self record:@"diagnostics.export_completed"];
-            UIActivityViewController *share =
+            if (!share) {
+                [self showCaptureNotice:@"30-second capture saved. File › Show Recordings in Files opens it."];
+                return;
+            }
+            self->_downloadLogButton.enabled = YES;
+            UIActivityViewController *sheet =
                 [[UIActivityViewController alloc] initWithActivityItems:@[outputURL]
                                                     applicationActivities:nil];
-            UIPopoverPresentationController *popover = share.popoverPresentationController;
+            UIPopoverPresentationController *popover = sheet.popoverPresentationController;
             popover.sourceView = self->_downloadLogButton;
             popover.sourceRect = self->_downloadLogButton.bounds;
-            [self presentViewController:share animated:YES completion:nil];
+            [self presentViewController:sheet animated:YES completion:nil];
         });
     });
 }
@@ -3173,7 +3190,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self record:@"capture.long_stopped"];
     if (_timedCaptureActive) {
         _timedCaptureActive = NO;
-        [self showCaptureNotice:@"30-second capture saved. Download it with Download Latest Log Capture."];
+        // After the last queued capture writes above, save the bundle to
+        // On My iPad/Theft4/Diagnostics; File > Show Recordings in Files opens it.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), _publicationCaptureQueue, ^{
+            dispatch_async(dispatch_get_main_queue(), ^{ [self exportLogCaptureSharing:NO]; });
+        });
     }
 }
 
@@ -3310,9 +3331,42 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 #endif
 }
 
-// File menu mirrors of the two launcher starts.
-- (BOOL)canStartFromLauncher {
-    return !_start.hidden && _start.enabled && !_executionAttempted;
+- (BOOL)isInGame {
+    return _gamePresentation;
+}
+
+// File > Show Recordings in Files opens Files at On My iPad/Theft4/Diagnostics,
+// where both exported log captures and finished 30-second captures go.
+- (void)showRecordingsInFiles {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *documents = [fm URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask
+                         appropriateForURL:nil create:YES error:nil];
+    NSURL *diagnostics = [documents URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+    if (!diagnostics || ![fm createDirectoryAtURL:diagnostics withIntermediateDirectories:YES
+                                       attributes:nil error:nil]) {
+        [self showCaptureNotice:@"The Files folder is unavailable."];
+        return;
+    }
+    NSURLComponents *files = [NSURLComponents new];
+    files.scheme = @"shareddocuments";
+    files.path = diagnostics.path;
+    [self record:@"ui.show_recordings_in_files"];
+    [UIApplication.sharedApplication openURL:files.URL options:@{} completionHandler:^(BOOL opened) {
+        if (!opened) [self showCaptureNotice:@"Open Files › On My iPad › Theft4 › Diagnostics."];
+    }];
+}
+
+// File > Return to Start Menu. The runtime runs once per process, so this
+// closes the game the same way as the game menu's Quit Game.
+- (void)confirmReturnToStartMenu {
+    if (!_gamePresentation || self.presentedViewController) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"RETURN TO START MENU"
+        message:@"This ends the game session and closes Theft4. Unsaved progress is lost. Reopen the app to see the start menu."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit Game" style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) { [self returnToLauncherDuringGame]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Resume Game" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)refreshEpisodeAvailability {
@@ -3690,26 +3744,22 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)buildMenuWithBuilder:(id<UIMenuBuilder>)builder {
     [super buildMenuWithBuilder:builder];
     if (builder.system != UIMenuSystem.mainSystem) return;
-    UICommand *enter = [UICommand commandWithTitle:@"Enter Liberty City" image:nil
-        action:@selector(enterLibertyCityCommand:) propertyList:nil];
-    UICommand *ballad = [UICommand commandWithTitle:@"Start the Ballad" image:nil
-        action:@selector(startTheBalladCommand:) propertyList:nil];
-    [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.start"
-        options:UIMenuOptionsDisplayInline children:@[enter, ballad]] atStartOfMenuForIdentifier:UIMenuFile];
     UICommand *capture = [UICommand commandWithTitle:@"Start 30-Second Capture" image:nil
         action:@selector(startThirtySecondCapture:) propertyList:nil];
+    UICommand *show = [UICommand commandWithTitle:@"Show Recordings in Files" image:nil
+        action:@selector(showRecordingsInFiles:) propertyList:nil];
+    UICommand *quit = [UICommand commandWithTitle:@"Return to Start Menu…" image:nil
+        action:@selector(returnToStartMenu:) propertyList:nil];
     [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.capture"
-        options:UIMenuOptionsDisplayInline children:@[capture]] atEndOfMenuForIdentifier:UIMenuFile];
+        options:UIMenuOptionsDisplayInline children:@[capture, show, quit]] atEndOfMenuForIdentifier:UIMenuFile];
 }
 
-- (void)enterLibertyCityCommand:(__unused UICommand *)command {
-    Theft4ViewController *controller = [self activeGameController];
-    if ([controller canStartFromLauncher]) [controller enterLibertyCity];
+- (void)showRecordingsInFiles:(__unused UICommand *)command {
+    [[self activeGameController] showRecordingsInFiles];
 }
 
-- (void)startTheBalladCommand:(__unused UICommand *)command {
-    Theft4ViewController *controller = [self activeGameController];
-    if ([controller canStartFromLauncher]) [controller startTheBallad];
+- (void)returnToStartMenu:(__unused UICommand *)command {
+    [[self activeGameController] confirmReturnToStartMenu];
 }
 
 - (Theft4ViewController *)activeGameController {
@@ -3729,12 +3779,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)validateCommand:(UICommand *)command {
     [super validateCommand:command];
     Theft4ViewController *controller = [self activeGameController];
-    if (command.action == @selector(enterLibertyCityCommand:) ||
-        command.action == @selector(startTheBalladCommand:)) {
-        const BOOL ballad = command.action == @selector(startTheBalladCommand:);
-        const BOOL available = [controller canStartFromLauncher] &&
-            (!ballad || ![controller tbogtUnavailableReason]);
-        command.attributes = available ? 0 : UIMenuElementAttributesDisabled;
+    if (command.action == @selector(showRecordingsInFiles:)) {
+        command.attributes = controller ? 0 : UIMenuElementAttributesDisabled;
+        return;
+    }
+    if (command.action == @selector(returnToStartMenu:)) {
+        command.attributes = [controller isInGame] ? 0 : UIMenuElementAttributesDisabled;
         return;
     }
     if (command.action != @selector(startThirtySecondCapture:)) return;

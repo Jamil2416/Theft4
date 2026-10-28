@@ -1091,35 +1091,49 @@ int theft4_trainer_active(void) {
 
 }  // extern "C"
 
-// Script command registration: record the handlers the trainer uses and put
-// the WAIT wrapper in front of the game's WAIT.
+// Script command registration: record the handlers the trainer uses.
 extern "C" void sub_82845600(PPCContext& ctx, uint8_t* base) {
   diag_registrations.fetch_add(1, std::memory_order_relaxed);
   const std::string name = GuestString(base, ctx.r3.u32);
   if (name.empty()) diag_unreadable_names.fetch_add(1, std::memory_order_relaxed);
   if (!name.empty()) {
-    for (size_t i = 0; i < kNames.size(); ++i) {
+    for (size_t i = 1; i < kNames.size(); ++i) {
       if (kNames[i] != name) continue;
       handlers[i].store(ctx.r4.u32, std::memory_order_release);
-      if (N(i) == N::WAIT) {
-        std::lock_guard lock(registration_mutex);
-        auto* runtime = rex::Runtime::instance();
-        auto* dispatcher = runtime ? runtime->function_dispatcher() : nullptr;
-        uint32_t thunk = wait_thunk.load(std::memory_order_acquire);
-        if (!thunk && dispatcher) {
-          thunk = dispatcher->AllocateThunk(WaitWrapper, uint32_t(ctx.lr));
-          wait_thunk.store(thunk, std::memory_order_release);
-        }
-        if (thunk) {
-          ctx.r4.u32 = thunk;
-          REXLOG_INFO("Theft4 trainer: WAIT {:08X} wrapped by thunk {:08X}", handlers[i].load(), thunk);
-        } else {
-          diag_wait_failed.store(true, std::memory_order_relaxed);
-          REXLOG_ERROR("Theft4 trainer: could not wrap WAIT; trainer inactive");
-        }
-      }
       break;
     }
   }
   __imp__sub_82845600(ctx, base);
+}
+
+// Command table insert (table, name hash, handler). sub_82845600 hashes the
+// name and calls this, but WAIT and the other core commands are registered
+// by sub_82846068, which calls it directly, so WAIT is wrapped here. The
+// hash is GET_HASH_KEY's (sub_82846F98). sub_82846AE8 re-inserts existing
+// entries when the table grows; an entry that already holds the thunk is
+// left alone.
+extern "C" void sub_82846948(PPCContext& ctx, uint8_t* base) {
+  static const uint32_t kWaitHash = ModelHash("WAIT");
+  constexpr uint32_t kCommandTable = 0x831927A0;
+  if (ctx.r3.u32 == kCommandTable && ctx.r4.u32 == kWaitHash && ctx.r5.u32 &&
+      ctx.r5.u32 != wait_thunk.load(std::memory_order_acquire)) {
+    std::lock_guard lock(registration_mutex);
+    handlers[size_t(N::WAIT)].store(ctx.r5.u32, std::memory_order_release);
+    auto* runtime = rex::Runtime::instance();
+    auto* dispatcher = runtime ? runtime->function_dispatcher() : nullptr;
+    uint32_t thunk = wait_thunk.load(std::memory_order_acquire);
+    if (!thunk && dispatcher) {
+      thunk = dispatcher->AllocateThunk(WaitWrapper, uint32_t(ctx.lr));
+      wait_thunk.store(thunk, std::memory_order_release);
+    }
+    if (thunk) {
+      ctx.r5.u32 = thunk;
+      REXLOG_INFO("Theft4 trainer: WAIT {:08X} wrapped by thunk {:08X}",
+                  handlers[size_t(N::WAIT)].load(), thunk);
+    } else {
+      diag_wait_failed.store(true, std::memory_order_relaxed);
+      REXLOG_ERROR("Theft4 trainer: could not wrap WAIT; trainer inactive");
+    }
+  }
+  __imp__sub_82846948(ctx, base);
 }

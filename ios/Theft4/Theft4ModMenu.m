@@ -763,7 +763,8 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     _gameActive = gameActive;
     if (gameActive && !_poll) {
         _poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
-        _poll.preferredFrameRateRange = CAFrameRateRangeMake(30, 60, 60);
+        // The game's own frame rate; a touchpad needs no more.
+        _poll.preferredFrameRateRange = CAFrameRateRangeMake(30, 30, 30);
         [_poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     } else if (!gameActive && _poll) {
         [_poll invalidate];
