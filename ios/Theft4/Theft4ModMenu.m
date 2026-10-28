@@ -187,8 +187,9 @@ static const NSInteger kDefaultAccent = 2;
         row(@"Controller Rumble", ^NSString * {
             NSDictionary *rumble = [NSUserDefaults.standardUserDefaults dictionaryForKey:@"Theft4RumbleDiagnostics"];
             if (!rumble.count) return @"No rumble requests yet";
-            return [NSString stringWithFormat:@"%@ requests, %@ nonzero · mode %@ · %@",
+            return [NSString stringWithFormat:@"%@ requests, %@ nonzero · %@ players · %@ resets · %@ · %@",
                 rumble[@"requests"] ?: @0, rumble[@"nonzero_requests"] ?: @0,
+                rumble[@"player_starts"] ?: @0, rumble[@"engine_resets"] ?: @0,
                 rumble[@"haptics_mode"] ?: @"?", rumble[@"last_error"] ?: @"no errors"];
         }),
     ];

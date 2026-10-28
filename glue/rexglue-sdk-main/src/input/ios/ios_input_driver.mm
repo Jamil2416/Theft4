@@ -48,6 +48,7 @@ static std::atomic<uint32_t> g_rumble_max_left{0};
 static std::atomic<uint32_t> g_rumble_max_right{0};
 static std::atomic<uint64_t> g_rumble_unrouted{0};
 static std::atomic<uint64_t> g_rumble_player_starts{0};
+static std::atomic<uint64_t> g_rumble_engine_resets{0};
 
 static dispatch_queue_t RumbleDiagnosticsQueue() {
   static dispatch_queue_t queue;
@@ -175,7 +176,12 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     channel->_playing = 0.0f;
     channel->_engine = nil;
   };
-  _engine.resetHandler = ^{ dispatch_async(dispatch_get_main_queue(), forget); };
+  // Resets are counted: a haptics server that resets after every start
+  // would silence rumble without any error.
+  _engine.resetHandler = ^{
+    NoteRumble(@"engine_resets", @(g_rumble_engine_resets.fetch_add(1, std::memory_order_relaxed) + 1));
+    dispatch_async(dispatch_get_main_queue(), forget);
+  };
   _engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
     NoteRumble(@"last_engine_stop_reason", @(reason));
     dispatch_async(dispatch_get_main_queue(), forget);
@@ -223,7 +229,17 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   _player = player;
   _playing = level;
   _playerStarted = CACurrentMediaTime();
-  NoteRumble(@"player_starts", @(g_rumble_player_starts.fetch_add(1, std::memory_order_relaxed) + 1));
+  const uint64_t starts = g_rumble_player_starts.fetch_add(1, std::memory_order_relaxed) + 1;
+  NoteRumble(@"player_starts", @(starts));
+  if (starts == 1) {
+    // The app's audio session as the first player starts; the engine shares
+    // it, so this tells a session conflict apart from the rumble path.
+    AVAudioSession* session = AVAudioSession.sharedInstance;
+    NoteRumble(@"audio_session_at_first_player",
+               [NSString stringWithFormat:@"%@ options=%lu other_audio=%d", session.category,
+                                          (unsigned long)session.categoryOptions,
+                                          session.isOtherAudioPlaying]);
+  }
 }
 
 - (void)applyIntensity:(float)intensity {
