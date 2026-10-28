@@ -94,68 +94,62 @@ static void NoteRumbleCounters() {
   NoteRumble(@"requests_without_controller", @(g_rumble_unrouted.load(std::memory_order_relaxed)));
 }
 
-// One haptic actuator group driven like an Xbox 360 rumble motor. A
-// continuous event plays at full base intensity; each motor change only sends
-// an intensity-control parameter, so the game's per-frame XInputSetState calls
-// never rebuild or restart a pattern. Every method runs on the main queue,
-// including the engine's reset/stop callbacks.
-//
-// This follows the launcher's vibration test, the one path that works on
-// device: engine and player made and started on the main thread, a plain
-// pattern player and an engine that shares the app's audio session. In play,
-// starting engines off the main thread failed (CoreHaptics -4810), and an
-// advanced looping player on a haptics-only engine could not be created
-// (NSCocoaErrorDomain 4097). The engine is created at the first nonzero
-// request. Any failure drops the engine, marks the channel failed and waits a
-// moment before a fresh try; the bridge then falls back from the grip engines
-// to the default-locality one the test uses.
+// The controller's rumble, driven like the Xbox 360's two motors mixed into
+// one. It follows the launcher's vibration test, the one path felt on
+// device: the default-locality engine, made and started on the main thread
+// and sharing the app's audio session, and plain pattern players whose
+// continuous event carries its intensity. Grip engines with a looping
+// player whose intensity was changed while playing started without errors
+// in play yet were never felt, so each strength (in tenths) gets a player of
+// its own, a new one at most every 0.1 s, and every burst lasts at least
+// 0.15 s. Every method runs on the main queue, including the engine's
+// reset/stop callbacks. Any failure drops the engine and waits a moment
+// before a fresh try.
+
 // A continuous event lasts at most 30 seconds; a motor held longer gets a new
 // player just before it ends.
 static constexpr CFTimeInterval kRumbleEventSeconds = 30.0;
 static constexpr CFTimeInterval kRumbleRenewSeconds = 29.0;
+static constexpr CFTimeInterval kRumbleMinimumSeconds = 0.15;
+static constexpr CFTimeInterval kRumbleChangeSeconds = 0.10;
+static constexpr float kRumbleLevels = 10.0f;
 
 API_AVAILABLE(ios(14.0), tvos(14.0))
 @interface LRIOSRumbleChannel : NSObject
-@property(nonatomic, readonly) BOOL failed;
-- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics
-                       locality:(GCHapticsLocality)locality
-                      sharpness:(float)sharpness;
+- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics;
 - (void)applyIntensity:(float)intensity;
 - (void)teardown;
 @end
 
 @implementation LRIOSRumbleChannel {
   GCDeviceHaptics* _haptics;
-  GCHapticsLocality _locality;
   CHHapticEngine* _engine;
-  id<CHHapticPatternPlayer> _player;
-  float _sharpness;
-  float _applied;
-  BOOL _running;
+  id<CHHapticPatternPlayer> _player;  // the newest player, kept until replaced
+  float _playing;                     // intensity of the running player, 0 when stopped
+  float _wanted;                      // newest request, applied when the change limit allows
+  BOOL _changeScheduled;
+  BOOL _failed;
   CFTimeInterval _playerStarted;
   CFTimeInterval _retryAfter;
 }
 
-- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics
-                       locality:(GCHapticsLocality)locality
-                      sharpness:(float)sharpness {
+- (instancetype)initWithHaptics:(GCDeviceHaptics*)haptics {
   self = [super init];
   if (!self) return nil;
   _haptics = haptics;
-  _locality = [locality copy];
-  _sharpness = sharpness;
   return self;
 }
 
-- (void)forgetPlayer {
-  _player = nil;
-  _running = NO;
-  _applied = 0.0f;
+- (void)stopPlayerAtTime:(NSTimeInterval)time {
+  NSError* error = nil;
+  if (_playing > 0.0f) [_player stopAtTime:time error:&error];
+  _playing = 0.0f;
 }
 
 - (void)fail:(NSString*)stage error:(NSError*)error {
-  NoteRumbleError([NSString stringWithFormat:@"%@ %@", stage, _locality], error);
-  [self forgetPlayer];
+  NoteRumbleError(stage, error);
+  [self stopPlayerAtTime:CHHapticTimeImmediate];
+  _player = nil;
   [_engine stopWithCompletionHandler:nil];
   _engine = nil;
   _failed = YES;
@@ -165,7 +159,7 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
 - (BOOL)startEngine {
   if (_engine) return YES;
   if (_failed && CACurrentMediaTime() < _retryAfter) return NO;
-  _engine = [_haptics createEngineWithLocality:_locality];
+  _engine = [_haptics createEngineWithLocality:GCHapticsLocalityDefault];
   if (!_engine) {
     [self fail:@"create engine" error:nil];
     return NO;
@@ -177,7 +171,8 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   dispatch_block_t forget = ^{
     LRIOSRumbleChannel* channel = weakSelf;
     if (!channel || channel->_engine != engine) return;
-    [channel forgetPlayer];
+    channel->_player = nil;
+    channel->_playing = 0.0f;
     channel->_engine = nil;
   };
   _engine.resetHandler = ^{ dispatch_async(dispatch_get_main_queue(), forget); };
@@ -190,18 +185,19 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     [self fail:@"start engine" error:error];
     return NO;
   }
-  if (_failed) NoteRumble(@"recovered_after_failure", _locality);
+  if (_failed) NoteRumble(@"recovered_after_failure", @YES);
   _failed = NO;
   return YES;
 }
 
-- (BOOL)startPlayer {
-  if (![self startEngine]) return NO;
+// Starts a player at this intensity, then stops the one it replaces.
+- (void)playIntensity:(float)level {
+  if (![self startEngine]) return;
   NSError* error = nil;
   CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc]
-      initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
+      initWithParameterID:CHHapticEventParameterIDHapticIntensity value:level];
   CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc]
-      initWithParameterID:CHHapticEventParameterIDHapticSharpness value:_sharpness];
+      initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5f];
   CHHapticEvent* event = [[CHHapticEvent alloc]
       initWithEventType:CHHapticEventTypeHapticContinuous
              parameters:@[intensity, sharpness]
@@ -212,55 +208,61 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
                                                                error:&error];
   if (!pattern) {
     [self fail:@"create pattern" error:error];
-    return NO;
+    return;
   }
-  _player = [_engine createPlayerWithPattern:pattern error:&error];
-  if (!_player) {
+  id<CHHapticPatternPlayer> player = [_engine createPlayerWithPattern:pattern error:&error];
+  if (!player) {
     [self fail:@"create player" error:error];
-    return NO;
+    return;
   }
-  if (![_player startAtTime:CHHapticTimeImmediate error:&error]) {
+  if (![player startAtTime:CHHapticTimeImmediate error:&error]) {
     [self fail:@"start player" error:error];
-    return NO;
+    return;
   }
-  _running = YES;
+  [self stopPlayerAtTime:CHHapticTimeImmediate];
+  _player = player;
+  _playing = level;
   _playerStarted = CACurrentMediaTime();
   NoteRumble(@"player_starts", @(g_rumble_player_starts.fetch_add(1, std::memory_order_relaxed) + 1));
-  return YES;
 }
 
 - (void)applyIntensity:(float)intensity {
+  // Tenths, and never below one tenth while a motor is turning at all.
   intensity = std::clamp(intensity, 0.0f, 1.0f);
-  NSError* error = nil;
-  if (intensity <= 0.0f) {
-    if (_running) [_player stopAtTime:CHHapticTimeImmediate error:&error];
-    [self forgetPlayer];
+  const float level = intensity > 0.0f
+      ? std::max(1.0f, std::round(intensity * kRumbleLevels)) / kRumbleLevels
+      : 0.0f;
+  _wanted = level;
+  const CFTimeInterval played = CACurrentMediaTime() - _playerStarted;
+  if (level <= 0.0f) {
+    // Short bursts still play long enough to be felt.
+    if (_playing > 0.0f)
+      [self stopPlayerAtTime:_engine.currentTime + std::max(0.0, kRumbleMinimumSeconds - played)];
     return;
   }
-  const CFTimeInterval now = CACurrentMediaTime();
-  if (_running && now - _playerStarted >= kRumbleRenewSeconds) {
-    [_player stopAtTime:CHHapticTimeImmediate error:&error];
-    [self forgetPlayer];
-  }
-  // Motor speeds arrive as 16-bit values; ignore changes the actuators
-  // cannot express rather than resending them every frame.
-  if (_running && std::fabs(intensity - _applied) < 1.0f / 255.0f) return;
-  if (!_running && ![self startPlayer]) return;
-  CHHapticDynamicParameter* control = [[CHHapticDynamicParameter alloc]
-      initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
-                    value:intensity
-             relativeTime:0];
-  if (![_player sendParameters:@[control] atTime:CHHapticTimeImmediate error:&error]) {
-    [self fail:@"send intensity" error:error];
+  if (_playing == level && played < kRumbleRenewSeconds) return;
+  if (_playing > 0.0f && played < kRumbleChangeSeconds) {
+    // Changing strength every frame would replace a player every frame;
+    // the newest strength is applied once the limit allows.
+    if (_changeScheduled) return;
+    _changeScheduled = YES;
+    __weak LRIOSRumbleChannel* weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 int64_t((kRumbleChangeSeconds - played) * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     LRIOSRumbleChannel* channel = weakSelf;
+                     if (!channel) return;
+                     channel->_changeScheduled = NO;
+                     if (channel->_playing > 0.0f) [channel applyIntensity:channel->_wanted];
+                   });
     return;
   }
-  _applied = intensity;
+  [self playIntensity:level];
 }
 
 - (void)teardown {
-  NSError* error = nil;
-  if (_running) [_player stopAtTime:CHHapticTimeImmediate error:&error];
-  [self forgetPlayer];
+  [self stopPlayerAtTime:CHHapticTimeImmediate];
+  _player = nil;
   [_engine stopWithCompletionHandler:nil];
   _engine = nil;
 }
@@ -276,13 +278,8 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
 @end
 
 @implementation LRIOSControllerBridge {
-  // Separate grips when the controller exposes them (DualSense, DualShock 4,
-  // Xbox): the Xbox low-frequency left motor drives the left grip and the
-  // high-frequency right motor the right grip. Otherwise one mixed channel.
-  // The channels are only touched on the main queue.
-  LRIOSRumbleChannel* _left;
-  LRIOSRumbleChannel* _right;
-  LRIOSRumbleChannel* _mixed;
+  // Only touched on the main queue.
+  LRIOSRumbleChannel* _rumble;
   std::atomic<uint32_t> _pending;
   std::atomic<bool> _scheduled;
   std::atomic<bool> _rumbleActive;
@@ -299,27 +296,9 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
   if (@available(iOS 14.0, tvOS 14.0, *)) {
     GCDeviceHaptics* haptics = controller.haptics;
     if (haptics) {
-      NSSet<GCHapticsLocality>* localities = haptics.supportedLocalities;
-      // The default-locality channel is always kept: it is the launcher
-      // test's path and the fallback when the grip engines will not start.
-      _mixed = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
-                                                  locality:GCHapticsLocalityDefault
-                                                 sharpness:0.5f];
-      if ([localities containsObject:GCHapticsLocalityLeftHandle] &&
-          [localities containsObject:GCHapticsLocalityRightHandle]) {
-        _left = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
-                                                   locality:GCHapticsLocalityLeftHandle
-                                                  sharpness:0.25f];
-        _right = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics
-                                                    locality:GCHapticsLocalityRightHandle
-                                                   sharpness:0.75f];
-      }
+      _rumble = [[LRIOSRumbleChannel alloc] initWithHaptics:haptics];
       _rumbleActive.store(true);
-      NoteRumble(@"haptics_mode", _left ? @"left/right grips" : @"single mixed");
-      NoteRumble(@"haptics_path", @"main thread, plain player");
-      NoteRumble(@"supported_localities",
-                 [[localities.allObjects sortedArrayUsingSelector:@selector(compare:)]
-                     componentsJoinedByString:@","]);
+      NoteRumble(@"haptics_mode", @"default locality, fixed-intensity players");
     } else {
       NoteRumble(@"haptics_mode", @"controller reports no haptics");
     }
@@ -348,19 +327,8 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     const uint32_t value = bridge->_pending.load(std::memory_order_acquire);
     const float l = float(value >> 16) / 65535.0f;
     const float r = float(value & 0xFFFFu) / 65535.0f;
-    if (bridge->_left) {
-      [bridge->_left applyIntensity:l];
-      [bridge->_right applyIntensity:r];
-      if (!bridge->_left.failed && !bridge->_right.failed) return;
-      // A grip engine or player failed; use the single default-locality
-      // engine, the launcher test's path, for the rest of this connection.
-      [bridge->_left teardown];
-      [bridge->_right teardown];
-      bridge->_left = nil;
-      bridge->_right = nil;
-      NoteRumble(@"haptics_mode", @"single mixed (grip engines failed)");
-    }
-    [bridge->_mixed applyIntensity:std::min(1.0f, std::max(l, r) * 0.7f + std::min(l, r) * 0.3f)];
+    // The heavy left motor leads; the light right motor adds a little.
+    [bridge->_rumble applyIntensity:std::min(1.0f, std::max(l, r) * 0.7f + std::min(l, r) * 0.3f)];
   });
 }
 
@@ -370,12 +338,8 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     // Runs after any queued apply; the block keeps the bridge alive until the
     // motors have stopped.
     dispatch_async(dispatch_get_main_queue(), ^{
-      [self->_left teardown];
-      [self->_right teardown];
-      [self->_mixed teardown];
-      self->_left = nil;
-      self->_right = nil;
-      self->_mixed = nil;
+      [self->_rumble teardown];
+      self->_rumble = nil;
     });
     if (_controller && _controller.motion) {
       _controller.motion.sensorsActive = NO;

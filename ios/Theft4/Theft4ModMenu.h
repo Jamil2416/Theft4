@@ -30,10 +30,11 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 + (instancetype)action:(NSString *)title help:(NSString *)help run:(void (^)(void))run;
 @end
 
-// The in-game mod menu, drawn over gameplay. A click on the DualSense
-// touchpad opens or closes it; sliding up or down moves the selection; a
-// slide right selects, toggles or raises a value; a slide left goes back or
-// lowers a value. Rows can also be tapped on screen.
+// The in-game mod menu, drawn over gameplay. A double-click on the DualSense
+// touchpad opens it; clicks on the touchpad's top and bottom move the
+// selection, right selects, toggles or raises a value, left goes back or
+// lowers one, and a double-click in its centre closes it. Rows can also be
+// tapped on screen.
 @interface Theft4ModMenu : UIView
 // overlays: rows for the app's on-screen graphs, added under DISPLAY.
 - (instancetype)initWithOverlays:(NSArray<Theft4ModItem *> *)overlays;
@@ -46,6 +47,8 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 @property(nonatomic) CGFloat topOffset;
 // Called after the player changes a persistent setting in game.
 @property(nonatomic, copy) void (^persistentSettingChanged)(NSString *defaultsKey, BOOL on);
+// Diagnostics > Test Vibration: plays the launcher's vibration test pulse.
+@property(nonatomic, copy) void (^testVibration)(void);
 
 // Settings that persist between launches, keyed by user-defaults key, as
 // NSNumber-wrapped theft4_trainer_setting values.

@@ -2690,6 +2690,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         else if ([key isEqualToString:@"Theft4ModUnlimitedAmmo"]) controller->_bringupOverlay.unlimitedAmmo.on = on;
         else controller->_bringupOverlay.trainerSwitches[key].on = on;
     };
+    _modMenu.testVibration = ^{ [weakSelf testControllerVibration]; };
     _modMenu.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:_modMenu];
     [NSLayoutConstraint activateConstraints:@[

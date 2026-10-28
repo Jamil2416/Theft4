@@ -542,7 +542,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UIView *handlingRow = [self choice:@"VEHICLE HANDLING"
         detail:@"Realistic: Realistic Handling & Physics by Shturmovik2, for the base game and both episodes. Jelly: soft, bouncy, light and top-heavy, so vehicles roll over easily. Applies when the game starts; your game files are not changed."
         control:_handlingPreset];
-    NSString *menuNote = @"In game, click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
+    NSString *menuNote = @"In game, double-click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
+        @"Click the touchpad's top or bottom to move, right to select, left to go back; double-click its centre to close. "
         @"It has these switches and more: vehicle spawner, no clip, free camera, teleport, weapons, money, time, weather, traffic and performance graphs. "
         @"Changes there are saved here too.";
     _mods = Column(@[

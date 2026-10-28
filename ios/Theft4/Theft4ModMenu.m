@@ -44,10 +44,31 @@ static UIColor *Ink(uint32_t rgb) {
 
 static const NSInteger kMaxRows = 8;  // fewer when the screen is short
 static const CGFloat kRowHeight = 28, kHeaderHeight = 44, kFooterHeight = 28, kPanelWidth = 260, kHelpHeight = 46;
-// Touchpad travel (axis units, -1...1) per selection step and per value step.
-static const CGFloat kVerticalStep = 0.22, kHorizontalStep = 0.45, kAxisLock = 0.10;
+// Touchpad: a click is placed by where the finger is (axes -1...1, y up).
+// The middle square is the centre; outside it the larger axis picks the edge.
+static const CGFloat kPadCentre = 0.30;
+static const CFTimeInterval kDoubleClick = 0.40;
 
-typedef NS_ENUM(NSInteger, Theft4SwipeAxis) { Theft4SwipeNone, Theft4SwipeVertical, Theft4SwipeHorizontal };
+typedef NS_ENUM(NSInteger, Theft4PadZone) {
+    Theft4PadCentre, Theft4PadUp, Theft4PadDown, Theft4PadLeft, Theft4PadRight
+};
+
+static Theft4PadZone PadZone(CGPoint p) {
+    if (fabs(p.x) < kPadCentre && fabs(p.y) < kPadCentre) return Theft4PadCentre;
+    if (fabs(p.x) > fabs(p.y)) return p.x > 0 ? Theft4PadRight : Theft4PadLeft;
+    return p.y > 0 ? Theft4PadUp : Theft4PadDown;
+}
+
+static NSString *PadZoneName(Theft4PadZone zone) {
+    switch (zone) {
+        case Theft4PadCentre: return @"centre";
+        case Theft4PadUp: return @"up";
+        case Theft4PadDown: return @"down";
+        case Theft4PadLeft: return @"left";
+        case Theft4PadRight: return @"right";
+    }
+    return @"?";
+}
 
 @interface Theft4ModMenu ()
 @end
@@ -62,9 +83,11 @@ typedef NS_ENUM(NSInteger, Theft4SwipeAxis) { Theft4SwipeNone, Theft4SwipeVertic
     NSArray<UILabel *> *_rowTitles, *_rowValues;
     NSInteger _firstVisible;
     CADisplayLink *_poll;
-    BOOL _wasClicked, _wasTouched, _horizontalUsed;
-    CGPoint _touchStart, _lastStep;
-    Theft4SwipeAxis _axis;
+    BOOL _wasClicked;
+    CGPoint _lastTouch;                 // last nonzero finger position
+    CFTimeInterval _lastTouchTime, _lastClickTime;
+    NSUInteger _clickCount;
+    NSString *_lastClickText;           // shown under Diagnostics > Touchpad
     uint32_t _statusCounter;
     CFTimeInterval _statusUntil;
     // Appearance, from the menu's own Settings page.
@@ -145,6 +168,7 @@ static const NSInteger kDefaultAccent = 2;
 
 // Read-only rows: select one to read its state in the help line.
 - (NSArray<Theft4ModItem *> *)diagnosticsItems {
+    __weak Theft4ModMenu *weakSelf = self;
     Theft4ModItem *(^row)(NSString *, NSString *(^)(void)) = ^Theft4ModItem *(NSString *title, NSString *(^text)(void)) {
         Theft4ModItem *item = [Theft4ModItem action:title help:nil run:nil];
         item.helpText = text;
@@ -153,6 +177,13 @@ static const NSInteger kDefaultAccent = 2;
     return @[
         row(@"Mods", ^NSString * { return [Theft4ModMenu trainerDiagnostics]; }),
         row(@"Episode Start", ^NSString * { return [Theft4ModMenu episodeDiagnostics]; }),
+        row(@"Touchpad", ^NSString * {
+            Theft4ModMenu *menu = weakSelf;
+            if (!menu || !menu->_clickCount) return @"No touchpad clicks yet";
+            return [NSString stringWithFormat:@"%lu clicks · last %@", (unsigned long)menu->_clickCount,
+                menu->_lastClickText];
+        }),
+        [self testVibrationItem],
         row(@"Controller Rumble", ^NSString * {
             NSDictionary *rumble = [NSUserDefaults.standardUserDefaults dictionaryForKey:@"Theft4RumbleDiagnostics"];
             if (!rumble.count) return @"No rumble requests yet";
@@ -161,6 +192,21 @@ static const NSInteger kDefaultAccent = 2;
                 rumble[@"haptics_mode"] ?: @"?", rumble[@"last_error"] ?: @"no errors"];
         }),
     ];
+}
+
+// The launcher's test pulse, played during the game: felt here but not in
+// play points at the game's rumble path rather than the controller.
+- (Theft4ModItem *)testVibrationItem {
+    __weak Theft4ModMenu *weakSelf = self;
+    Theft4ModItem *item = [Theft4ModItem action:@"Test Vibration" help:nil run:^{
+        Theft4ModMenu *menu = weakSelf;
+        if (menu.testVibration) menu.testVibration();
+    }];
+    item.helpText = ^NSString * {
+        return [@"Plays the launcher's test pulse now. Last result: " stringByAppendingString:
+            [NSUserDefaults.standardUserDefaults stringForKey:@"Theft4RumbleLauncherTest"] ?: @"not run"];
+    };
+    return item;
 }
 
 + (NSString *)trainerDiagnostics {
@@ -736,10 +782,10 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     Theft4ModItem *item = items.count ? items[self.selected] : nil;
     if (item.kind == Theft4ModItemValue) {
         [self adjust:item direction:direction];
-    } else if (!_horizontalUsed) {
-        _horizontalUsed = YES;  // one select or back per slide
-        if (direction > 0) [self activate];
-        else [self back];
+    } else if (direction > 0) {
+        [self activate];
+    } else {
+        [self back];
     }
 }
 
@@ -763,8 +809,8 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     _gameActive = gameActive;
     if (gameActive && !_poll) {
         _poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
-        // The game's own frame rate; a touchpad needs no more.
-        _poll.preferredFrameRateRange = CAFrameRateRangeMake(30, 30, 30);
+        // Fast enough to see both presses of a quick double-click.
+        _poll.preferredFrameRateRange = CAFrameRateRangeMake(30, 60, 60);
         [_poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     } else if (!gameActive && _poll) {
         [_poll invalidate];
@@ -798,37 +844,42 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
                                                 forKey:@"Theft4EpisodeDiagnosticsText"];
     }
     GCDualSenseGamepad *pad = self.dualSense;
-    if (!pad) { _wasClicked = _wasTouched = NO; return; }
-    const BOOL clicked = pad.touchpadButton.pressed;
-    const BOOL touched = pad.touchpadButton.touched;
+    if (!pad) { _wasClicked = NO; return; }
     const CGPoint p = CGPointMake(pad.touchpadPrimary.xAxis.value, pad.touchpadPrimary.yAxis.value);
-    if (clicked && !_wasClicked) [self setOpen:!_open];
+    // The pad may report the finger at zero on the frame of the click; use
+    // where it was just before.
+    if (p.x != 0 || p.y != 0) { _lastTouch = p; _lastTouchTime = now; }
+    const BOOL clicked = pad.touchpadButton.pressed;
+    if (clicked && !_wasClicked) {
+        const CGPoint at = (p.x != 0 || p.y != 0) ? p : now - _lastTouchTime < 0.3 ? _lastTouch : CGPointZero;
+        [self touchpadClickedAt:at time:now];
+    }
     _wasClicked = clicked;
-    // A click is not a slide; a slide starts fresh after the click is released.
-    if (!_open || clicked || !touched) {
-        _wasTouched = NO;
+}
+
+// A double-click anywhere opens the menu. While it is open, a click on the
+// top or bottom edge moves the selection, right selects, toggles or raises a
+// value, left goes back or lowers one, and a double-click in the centre
+// closes it. Edge clicks never count toward a double-click, so they can be
+// repeated quickly.
+- (void)touchpadClickedAt:(CGPoint)point time:(CFTimeInterval)now {
+    const Theft4PadZone zone = PadZone(point);
+    ++_clickCount;
+    _lastClickText = [NSString stringWithFormat:@"(%.2f, %.2f) %@", point.x, point.y, PadZoneName(zone)];
+    const BOOL counts = !_open || zone == Theft4PadCentre;
+    const BOOL doubleClick = counts && now - _lastClickTime < kDoubleClick;
+    _lastClickTime = counts && !doubleClick ? now : 0;
+    if (doubleClick) {
+        [self setOpen:!_open];
         return;
     }
-    if (!_wasTouched) {
-        _wasTouched = YES;
-        _touchStart = _lastStep = p;
-        _axis = Theft4SwipeNone;
-        _horizontalUsed = NO;
-        return;
-    }
-    if (_axis == Theft4SwipeNone) {
-        const CGFloat dx = p.x - _touchStart.x, dy = p.y - _touchStart.y;
-        if (hypot(dx, dy) < kAxisLock) return;
-        _axis = fabs(dx) > fabs(dy) ? Theft4SwipeHorizontal : Theft4SwipeVertical;
-        _lastStep = _touchStart;
-    }
-    if (_axis == Theft4SwipeVertical) {
-        // Touchpad y grows upward; sliding up moves the selection up.
-        while (p.y - _lastStep.y >= kVerticalStep) { [self moveSelection:-1]; _lastStep.y += kVerticalStep; }
-        while (_lastStep.y - p.y >= kVerticalStep) { [self moveSelection:1]; _lastStep.y -= kVerticalStep; }
-    } else {
-        while (p.x - _lastStep.x >= kHorizontalStep) { [self horizontal:1]; _lastStep.x += kHorizontalStep; }
-        while (_lastStep.x - p.x >= kHorizontalStep) { [self horizontal:-1]; _lastStep.x -= kHorizontalStep; }
+    if (!_open) return;
+    switch (zone) {
+        case Theft4PadUp: [self moveSelection:-1]; break;
+        case Theft4PadDown: [self moveSelection:1]; break;
+        case Theft4PadRight: [self horizontal:1]; break;
+        case Theft4PadLeft: [self horizontal:-1]; break;
+        case Theft4PadCentre: break;
     }
 }
 
