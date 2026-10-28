@@ -56,7 +56,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/logs"
           # Some pinned dependencies exceed the default 260-character path limit.
           git config --global core.longpaths true
-          python tools/setup_repo.py --jobs 8 2>&1 | tee "$RUNNER_TEMP/logs/setup.log"
+          # GitHub sometimes rate-limits the many submodule fetches (HTTP 429).
+          # setup_repo.py is safe to rerun, so retry after a pause.
+          for attempt in 1 2 3; do
+            if python tools/setup_repo.py --jobs 8 2>&1 | tee -a "$RUNNER_TEMP/logs/setup.log"; then
+              break
+            fi
+            if [[ $attempt == 3 ]]; then exit 1; fi
+            echo "Dependency setup failed (attempt $attempt); retrying in $((attempt * 60 + (attempt - 1) * 60)) s"
+            sleep $((attempt * 60 + (attempt - 1) * 60))
+          done
 
       - name: Install static zlib
         shell: bash
