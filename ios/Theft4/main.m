@@ -540,6 +540,8 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     NSURL *_lightCaptureURL;
     uint64_t _lightCaptureCursor;
     CFTimeInterval _publicationCaptureStartTime;
+    CFTimeInterval _publicationCaptureLimit; // seconds before an automatic stop
+    BOOL _timedCaptureActive;
     NSUInteger _publicationCaptureBytes; // export queue only
     UIButton *_downloadLogButton;
     UIButton *_exportSavesButton;
@@ -615,6 +617,9 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)flushRuntimeCallers;
 - (void)appendPublicationCaptureText:(NSString *)text;
 - (void)stopPublicationCapture;
+- (NSString *)timedCaptureUnavailableReason;
+- (void)startTimedPerformanceCapture;
+- (void)showCaptureNotice:(NSString *)text;
 - (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture;
 - (void)applyLowPowerPreset;
 - (void)applyLimitedMemoryCaps;
@@ -3037,6 +3042,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     dispatch_resume(_runtimeCallerTimer);
     _publicationCaptureCursor = theft4_publication_capture_start();
     _publicationCaptureStartTime = CACurrentMediaTime();
+    _publicationCaptureLimit = 300;
     _publicationCaptureActive = YES;
     [_frameTimeView setCaptureRequested:YES];
     [self updateFrameTimeHUD];
@@ -3062,6 +3068,55 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     });
     [self updateFrameTimeHUD];
     [self record:@"capture.long_stopped"];
+    if (_timedCaptureActive) {
+        _timedCaptureActive = NO;
+        [self showCaptureNotice:@"30-second capture saved. Download it with Download Latest Log Capture."];
+    }
+}
+
+// File > Start 30-Second Capture in the iPadOS menu bar. The capture files
+// are opened once per game session, so a session that already recorded one
+// cannot start another.
+- (NSString *)timedCaptureUnavailableReason {
+    if (!_gamePresentation || _launcherDuringGame) return @"Start the game first";
+    if (_publicationCaptureActive) return _timedCaptureActive ? @"Recording…" : @"A capture is already recording";
+    if (_publicationCaptureURL || _publicationCaptureWriteFailed) return @"Already captured this session";
+    return nil;
+}
+
+- (void)startTimedPerformanceCapture {
+    if ([self timedCaptureUnavailableReason]) return;
+    if (![self beginPublicationCapture]) {
+        [self showCaptureNotice:@"The capture could not start."];
+        return;
+    }
+    _publicationCaptureLimit = 30;
+    _timedCaptureActive = YES;
+    [self record:@"capture.timed_30s_started"];
+    [self showCaptureNotice:@"Recording a 30-second performance capture."];
+}
+
+- (void)showCaptureNotice:(NSString *)text {
+    UILabel *notice = [UILabel new];
+    notice.translatesAutoresizingMaskIntoConstraints = NO;
+    notice.text = [NSString stringWithFormat:@"   %@   ", text];
+    notice.numberOfLines = 0;
+    notice.textAlignment = NSTextAlignmentCenter;
+    notice.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    notice.textColor = UIColor.whiteColor;
+    notice.backgroundColor = [UIColor colorWithWhite:0 alpha:0.7];
+    notice.layer.cornerRadius = 10;
+    notice.layer.masksToBounds = YES;
+    notice.userInteractionEnabled = NO;
+    [self.view addSubview:notice];
+    [NSLayoutConstraint activateConstraints:@[
+        [notice.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [notice.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:16],
+        [notice.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor constant:-32],
+        [notice.heightAnchor constraintGreaterThanOrEqualToConstant:40],
+    ]];
+    [UIView animateWithDuration:0.4 delay:3.0 options:0 animations:^{ notice.alpha = 0; }
+                     completion:^(__unused BOOL finished) { [notice removeFromSuperview]; }];
 }
 
 - (void)markPerformanceScene:(UILongPressGestureRecognizer *)gesture {
@@ -3092,7 +3147,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)refreshFrameRate {
     // Capture stays in preallocated rings during play; save on explicit stop or
     // background only. Five minutes fits16384 records at the30FPS game cap.
-    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureStartTime >= 300)
+    if (_publicationCaptureActive && CACurrentMediaTime() - _publicationCaptureStartTime >= _publicationCaptureLimit)
         [self stopPublicationCapture];
     if (_fpsLabel.hidden) return;
     const uint64_t frames = theft4_frame_counter_published_frames();
@@ -3456,6 +3511,42 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 @end
 @implementation Theft4AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options { return YES; }
+
+// The app delegate ends every responder chain, so the File menu command
+// reaches it whether or not anything in the game view is first responder.
+- (void)buildMenuWithBuilder:(id<UIMenuBuilder>)builder {
+    [super buildMenuWithBuilder:builder];
+    if (builder.system != UIMenuSystem.mainSystem) return;
+    UICommand *capture = [UICommand commandWithTitle:@"Start 30-Second Capture" image:nil
+        action:@selector(startThirtySecondCapture:) propertyList:nil];
+    [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.capture"
+        options:UIMenuOptionsDisplayInline children:@[capture]] atEndOfMenuForIdentifier:UIMenuFile];
+}
+
+- (Theft4ViewController *)activeGameController {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        id delegate = scene.delegate;
+        if (scene.activationState == UISceneActivationStateForegroundActive &&
+            [delegate isKindOfClass:Theft4SceneDelegate.class])
+            return ((Theft4SceneDelegate *)delegate).controller;
+    }
+    return nil;
+}
+
+- (void)startThirtySecondCapture:(__unused UICommand *)command {
+    [[self activeGameController] startTimedPerformanceCapture];
+}
+
+- (void)validateCommand:(UICommand *)command {
+    [super validateCommand:command];
+    if (command.action != @selector(startThirtySecondCapture:)) return;
+    Theft4ViewController *controller = [self activeGameController];
+    NSString *reason = controller ? [controller timedCaptureUnavailableReason] : @"Start the game first";
+    command.discoverabilityTitle = reason;
+    command.attributes = reason ? UIMenuElementAttributesDisabled : 0;
+    command.title = reason ? [NSString stringWithFormat:@"Start 30-Second Capture (%@)", reason]
+                           : @"Start 30-Second Capture";
+}
 @end
 
 int main(int argc, char *argv[]) {
