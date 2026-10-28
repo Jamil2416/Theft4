@@ -6,6 +6,7 @@
 #include "theft4_metal_presenter.h"
 #include "theft4_motion_blur.h"
 #include "theft4_performance_defaults.h"
+#include "theft4_marketplace_root.h"
 #include "theft4_mod_mount.h"
 #include "theft4_timecycle_archive.h"
 #ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
@@ -522,9 +523,12 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                     async_pipeline_override ? "launch override" : "Lab default");
 #endif
 #endif
+        const auto marketplace = theft4::ResolveMarketplaceRoot(game_directory, support);
+        REXLOG_INFO("Theft4 episodes: {} (marketplace root {})", marketplace.summary,
+                    marketplace.path.string());
         rex::Runtime runtime(game_directory, support / "user",
                              std::filesystem::path(game_directory) / "update",
-                             support / "cache", {}, support / "marketplace", support / "saves");
+                             support / "cache", {}, marketplace.path, support / "saves");
         rex::RuntimeConfig config;
         config.tool_mode = false;
         config.graphics = theft4_create_bootstrap_graphics();

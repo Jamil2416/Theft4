@@ -2,13 +2,45 @@
 #include <rex/logging.h>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <thread>
 
+namespace {
+
+int Usage() {
+    std::fprintf(stderr,
+        "Usage: theft4_stage <base ISO> <update package> <NEW install directory> [episodes]\n"
+        "       theft4_stage --dlc-only <EXISTING install directory> <episodes>\n"
+        "Episodes: --tbogt <package or folder> and/or --tlad <package or folder>\n");
+    return 2;
+}
+
+// Reads "--tbogt X" / "--tlad X" pairs; returns false on anything else.
+bool ParseEpisodes(int argc, char** argv, int first, std::vector<gta4::install::DlcSelection>& out) {
+    for (int i = first; i < argc; i += 2) {
+        if (i + 1 >= argc) return false;
+        if (!std::strcmp(argv[i], "--tbogt"))
+            out.push_back({gta4::install::Episode::kTbogt, argv[i + 1]});
+        else if (!std::strcmp(argv[i], "--tlad"))
+            out.push_back({gta4::install::Episode::kTlad, argv[i + 1]});
+        else
+            return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        std::fprintf(stderr, "Usage: theft4_stage <base ISO> <update package> <NEW install directory>\n");
-        return 2;
+    const bool dlc_only = argc >= 2 && !std::strcmp(argv[1], "--dlc-only");
+    gta4::install::Selection selection;
+    if (dlc_only) {
+        if (argc < 5 || !ParseEpisodes(argc, argv, 3, selection.dlc_sources)) return Usage();
+    } else {
+        if (argc < 4 || !ParseEpisodes(argc, argv, 4, selection.dlc_sources)) return Usage();
+        selection.game_source = argv[1];
+        selection.update_source = argv[2];
     }
     // A command-line tool: show the SDK's own errors (for example a disc
     // image or package that cannot be mounted) beside the final result.
@@ -17,11 +49,17 @@ int main(int argc, char** argv) {
     rex::InitLogging(logging);
     int status = 2;
     try {
-        const auto destination = std::filesystem::absolute(argv[3]).lexically_normal();
-        // The upstream installer replaces its staging/backup paths. Only let
-        // this developer utility operate inside a newly claimed directory.
-        if (destination == destination.root_path() ||
-            !std::filesystem::create_directory(destination)) {
+        const auto destination =
+            std::filesystem::absolute(argv[dlc_only ? 2 : 3]).lexically_normal();
+        if (dlc_only) {
+            // Adds episodes beside an earlier staging; the installer publishes
+            // only dlc/<episode> and refuses without a valid game/ tree.
+            if (!std::filesystem::is_directory(destination / "game"))
+                throw std::runtime_error("Destination must be an earlier theft4_stage output");
+        } else if (destination == destination.root_path() ||
+                   !std::filesystem::create_directory(destination)) {
+            // The upstream installer replaces its staging/backup paths. Only let
+            // this developer utility operate inside a newly claimed directory.
             throw std::runtime_error("Destination must be a new directory with an existing parent");
         }
         gta4::install::Progress progress;
@@ -35,7 +73,6 @@ int main(int argc, char** argv) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(250));
             }
         });
-        const gta4::install::Selection selection{argv[1], argv[2], {}};
         auto result = gta4::install::Install(selection, destination, progress);
         if (result.success)
             result = gta4::install::VerifyInstall(destination / "game", destination / "dlc");
@@ -48,6 +85,14 @@ int main(int argc, char** argv) {
             ? std::string(destination_utf8.begin(), destination_utf8.end())
             : result.error;
         std::printf("Staging %s: %s\n", result.success ? "VERIFIED" : "FAILED", message.c_str());
+        if (result.success) {
+            for (const auto episode : {gta4::install::Episode::kTbogt, gta4::install::Episode::kTlad}) {
+                if (gta4::install::IsEpisodeReady(destination / "dlc", episode))
+                    std::printf("Episode ready: dlc/%s (copy to the iPad as Documents/dlc/%s)\n",
+                                gta4::install::EpisodeDirectory(episode),
+                                gta4::install::EpisodeDirectory(episode));
+            }
+        }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Staging failed: %s\n", error.what());
     }

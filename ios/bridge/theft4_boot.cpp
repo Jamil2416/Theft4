@@ -1,6 +1,7 @@
 #include "theft4_retail_mode.h"
 #include "theft4_boot.h"
 #include "gta4_installer.h"
+#include "theft4_marketplace_root.h"
 #include <rex/logging.h>
 #include <rex/diagnostics/policy.h>
 #include <rex/system/xmemory.h>
@@ -70,8 +71,9 @@ int theft4_validate_installed_game(const char* game_directory, char* message,
     try {
         std::string reason;
         const bool ready = gta4::install::IsInstallReady(game_directory, &reason);
+        const auto episodes = theft4::ResolveMarketplaceRoot(game_directory, {}).summary;
         WriteImportMessage(message, message_capacity,
-            ready ? "GTA IV and Title Update 8 are verified." : reason);
+            ready ? "GTA IV and Title Update 8 are verified. Episodes: " + episodes + "." : reason);
         return ready ? 0 : 1;
     } catch (const std::exception& error) {
         WriteImportMessage(message, message_capacity,
@@ -139,10 +141,12 @@ int theft4_prepare_game(const char* game_directory, const char* support_director
             event(context, reason.c_str());
         } else {
             event(context, "Game and TU8 verified on this device");
-            event(context, "Initializing Xbox runtime, memory, and filesystem");
             const std::filesystem::path game(game_directory);
+            const auto marketplace = theft4::ResolveMarketplaceRoot(game, support);
+            event(context, ("Episodes: " + marketplace.summary).c_str());
+            event(context, "Initializing Xbox runtime, memory, and filesystem");
             rex::Runtime runtime(game, support / "user", game / "update", support / "cache",
-                                 {}, support / "marketplace", support / "saves");
+                                 {}, marketplace.path, support / "saves");
             rex::RuntimeConfig config;
             config.tool_mode = true;
             if (runtime.Setup(std::move(config)) == 0) {

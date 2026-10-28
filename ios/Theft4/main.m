@@ -1103,7 +1103,10 @@ static void bootEvent(void *context, const char *event) {
         @"game/default.xex directly; do not create game/game and do not copy a raw ISO.\n\n"
         @"Return to %@ after the copy finishes. An already-installed matching "
         @"title update is detected automatically. Otherwise, select its file "
-        @"when prompted and the app will install it for you.\n", Theft4DisplayName(), Theft4DisplayName()];
+        @"when prompted and the app will install it for you.\n\n"
+        @"Optional episodes: copy The Ballad of Gay Tony as dlc/TBOGT and The Lost and "
+        @"Damned as dlc/TLAD, next to the game folder (each folder holds setup2.xml "
+        @"directly). Choose an episode in the game from Game > New.\n", Theft4DisplayName(), Theft4DisplayName()];
     if (![NSFileManager.defaultManager fileExistsAtPath:instructionsURL.path] &&
         ![instructions writeToURL:instructionsURL atomically:YES
         encoding:NSUTF8StringEncoding error:&error]) {
