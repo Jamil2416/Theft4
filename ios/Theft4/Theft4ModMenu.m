@@ -209,6 +209,56 @@ static NSString *DefaultsKeyFor(NSInteger setting) {
     return item;
 }
 
+// The handling preset is read when the game starts; the row saves the choice
+// for the next start (the launcher's Mods page shows the same setting).
+- (Theft4ModItem *)handlingItem {
+    NSArray<NSString *> *names = @[@"Original", @"Realistic", @"Jelly"];
+    Theft4ModItem *item = [Theft4ModItem new];
+    item.title = @"Handling (next start)";
+    item.help = @"Realistic Handling & Physics by Shturmovik2, or Jelly. Save, then reopen the game";
+    item.kind = Theft4ModItemValue;
+    item.minimum = 0; item.maximum = 2; item.step = 1; item.wraps = YES;
+    item.getValue = ^NSInteger {
+        return MAX(0, MIN(2, [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
+    };
+    item.setValue = ^(NSInteger value) {
+        [NSUserDefaults.standardUserDefaults setInteger:value forKey:@"Theft4ModHandling"];
+    };
+    item.format = ^NSString *(NSInteger v) { return names[MAX(0, MIN(2, v))]; };
+    return item;
+}
+
+- (Theft4ModItem *)roadsPreset:(NSString *)title help:(NSString *)help traffic:(int)traffic peds:(int)peds {
+    return [Theft4ModItem action:title help:help run:^{
+        TRAINER_SET(THEFT4_TRAINER_TRAFFIC_DENSITY, traffic);
+        TRAINER_SET(THEFT4_TRAINER_PED_DENSITY, peds);
+    }];
+}
+
+- (NSArray<Theft4ModItem *> *)trafficItemsWithPercent:(NSString *(^)(NSInteger))percent {
+    NSArray<NSString *> *mixes = @[@"Off", @"Sports Cars", @"Police", @"Unusual Vehicles"];
+    Theft4ModItem *mix = [self trainerValue:@"Extra Traffic"
+        help:@"Adds vehicles to the streets: sports cars, police, or airport tugs, trash trucks and other work vehicles"
+        setting:THEFT4_TRAINER_EXTRA_TRAFFIC minimum:0 maximum:3 step:1 format:^NSString *(NSInteger v) {
+            return mixes[MAX(0, MIN(3, v))];
+        }];
+    mix.wraps = YES;
+    return @[
+        [self roadsPreset:@"Empty Roads" help:@"Few cars and people" traffic:25 peds:50],
+        [self roadsPreset:@"Normal Roads" help:@"The game's own traffic" traffic:100 peds:100],
+        [self roadsPreset:@"Busy Roads" help:@"Heavy traffic and crowds" traffic:200 peds:150],
+        [self trainerValue:@"Traffic Density" help:@"Cars on the streets"
+            setting:THEFT4_TRAINER_TRAFFIC_DENSITY minimum:0 maximum:200 step:25 format:percent],
+        [self trainerValue:@"Pedestrian Density" help:@"People on the streets"
+            setting:THEFT4_TRAINER_PED_DENSITY minimum:0 maximum:200 step:25 format:percent],
+        mix,
+        [self trainerValue:@"Extra Traffic Interval" help:@"Seconds between added vehicles"
+            setting:THEFT4_TRAINER_EXTRA_TRAFFIC_RATE minimum:2 maximum:15 step:1 format:^NSString *(NSInteger v) {
+                return [NSString stringWithFormat:@"%lds", (long)v];
+            }],
+    ];
+}
+
 static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
     // Display name, model name. Models missing from the running game or
     // episode are reported on spawn rather than hidden.
@@ -311,6 +361,11 @@ static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
                 setting:THEFT4_TRAINER_SPAWN_INSIDE]] arrayByAddingObjectsFromArray:groups]],
         [self trainerToggle:@"Car God Mode" help:@"Your current vehicle takes no damage"
             setting:THEFT4_TRAINER_CAR_GOD_MODE],
+        [self trainerAction:@"Boost Forward" help:@"A burst of speed" action:THEFT4_TRAINER_BOOST_FORWARD],
+        [self trainerAction:@"Boost Up" help:@"Launch the vehicle upward" action:THEFT4_TRAINER_BOOST_UP],
+        [self trainerValue:@"Boost Strength" help:@"For Boost Forward and Boost Up"
+            setting:THEFT4_TRAINER_BOOST_STRENGTH minimum:1 maximum:10 step:1 format:plain],
+        [self handlingItem],
         [self trainerAction:@"Fix Vehicle" help:nil action:THEFT4_TRAINER_FIX_VEHICLE],
         [self trainerToggle:@"Auto-Repair" help:@"Repair damage as it happens"
             setting:THEFT4_TRAINER_AUTO_REPAIR],
@@ -364,10 +419,8 @@ static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
         weather,
         [self trainerToggle:@"Lock Weather" help:@"Keep the chosen weather"
             setting:THEFT4_TRAINER_LOCK_WEATHER],
-        [self trainerValue:@"Traffic Density" help:@"Cars on the streets"
-            setting:THEFT4_TRAINER_TRAFFIC_DENSITY minimum:0 maximum:200 step:25 format:percent],
-        [self trainerValue:@"Pedestrian Density" help:@"People on the streets"
-            setting:THEFT4_TRAINER_PED_DENSITY minimum:0 maximum:200 step:25 format:percent],
+        [Theft4ModItem submenu:@"Traffic" help:@"Road and pedestrian traffic"
+            children:[self trafficItemsWithPercent:percent]],
         [self trainerValue:@"Police Response" help:@"How hard the police come after you"
             setting:THEFT4_TRAINER_POLICE_RESPONSE minimum:0 maximum:3 step:1 format:^NSString *(NSInteger v) {
                 return police[MAX(0, MIN(3, v))];

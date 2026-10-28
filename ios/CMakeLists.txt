@@ -366,6 +366,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
     target_sources(theft4_core_bridge PRIVATE
         bridge/theft4_startup.cpp
         bridge/theft4_timecycle_archive.cpp
+        bridge/theft4_handling_mod.cpp
         bridge/theft4_bootstrap_graphics.cpp
         bridge/theft4_metal_presenter.mm
         bridge/theft4_bootstrap_audio.cpp
@@ -455,7 +456,7 @@ if(THEFT4_ENABLE_GAME_STARTUP)
         "${THEFT4_GENERATED_DIR}")
     target_link_libraries(theft4_core_bridge PRIVATE theft4_game_code
         SPIRV glslang MachineIndependent GenericCodeGen OSDependent OGLCompiler
-        xxHash::xxhash)
+        xxHash::xxhash z)
     target_compile_definitions(theft4_core_bridge PUBLIC THEFT4_HAS_GAME_STARTUP=1)
     if(THEFT4_ARM64_TUNE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_compile_options(theft4_core_bridge PRIVATE "-mtune=${THEFT4_ARM64_TUNE}")
@@ -524,6 +525,18 @@ set(THEFT4_TIMECYCLE_RESOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/CustomTimeCycle/metadata.plist")
 set_source_files_properties(${THEFT4_TIMECYCLE_RESOURCES} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources/Mods/CustomTimeCycle")
+# Realistic Handling & Physics by Shturmovik2: handling tables merged per
+# vehicle into the game's own files at launch, and the episode vehicles.ide
+# files read only for their handling IDs.
+set(THEFT4_HANDLING_RESOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/handling-base.dat"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/handling-tbogt.dat"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/handling-tlad.dat"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/vehicles-tbogt.ide"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/vehicles-tlad.ide"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Theft4/Mods/RealisticHandling/metadata.plist")
+set_source_files_properties(${THEFT4_HANDLING_RESOURCES} PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources/Mods/RealisticHandling")
 option(THEFT4_TEXTURE_PREPARATION_PREVIEW
     "Show the capability-gated texture source inventory during setup" OFF)
 if(THEFT4_BC_TEXTURE_COMPATIBILITY)
@@ -533,7 +546,7 @@ add_executable(Theft4 MACOSX_BUNDLE Theft4/main.m Theft4/Theft4TouchControls.m
     Theft4/Theft4TextureSources.m
     Theft4/Theft4LauncherView.m Theft4/Theft4ModMenu.m
     Theft4/Theft4FrameTimeView.m Theft4/Theft4CityView.m Theft4/Theft4CPUUsageView.m
-    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}" ${THEFT4_TIMECYCLE_RESOURCES})
+    Theft4/XeniOS-Touch-LICENSE.txt "${THEFT4_ASSET_CATALOG}" ${THEFT4_TIMECYCLE_RESOURCES} ${THEFT4_HANDLING_RESOURCES})
 if(THEFT4_BC_TEXTURE_COMPATIBILITY)
     enable_language(OBJCXX)
     target_sources(Theft4 PRIVATE

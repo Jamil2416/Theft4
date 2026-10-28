@@ -530,6 +530,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [trainerRows addObject:[self setting:entry[0] detail:entry[1] toggle:toggle]];
     }
     _trainerSwitches = trainerSwitches;
+    _handlingPreset = ChoiceControl(@[@"Original", @"Realistic", @"Jelly"], @"handlingPreset",
+        @"Vehicle handling", @"Applies when the game starts");
+    UIView *handlingRow = [self choice:@"VEHICLE HANDLING"
+        detail:@"Realistic: Realistic Handling & Physics by Shturmovik2, for the base game and both episodes. Jelly: soft, bouncy, light and top-heavy, so vehicles roll over easily. Applies when the game starts; your game files are not changed."
+        control:_handlingPreset];
     NSString *menuNote = @"In game, click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
         @"It has these switches and more: vehicle spawner, no clip, free camera, teleport, weapons, money, time, weather, traffic and performance graphs. "
         @"Changes there are saved here too.";
@@ -554,6 +559,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Keep reserve ammunition for weapons you own. Magazines still empty, and you still reload normally. This does not grant weapons."
             toggle:_unlimitedAmmo],
         Copy(@"Reserve ammo is replenished while enabled. Replenished ammo amounts can be included in your game save; turning the mod off restores normal ammo consumption.", 12, NO),
+        handlingRow,
         Column(trainerRows, 16),
         Copy(menuNote, 12, NO),
         Copy(@"Your original game files and saves are kept.", 12, NO)
@@ -591,6 +597,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Unlimited reserve ammo. Magazines still empty and reload normally. No weapons granted."
             toggle:_unlimitedAmmo]];
         [_mods addArrangedSubview:Copy(@"Replenished ammo can be saved. Turning the mod off restores normal consumption.", 12, NO)];
+        [_mods addArrangedSubview:handlingRow];
         for (UIView *row in trainerRows) [_mods addArrangedSubview:row];
         [_mods addArrangedSubview:Copy(menuNote, 12, NO)];
         NSMutableArray *pages = [NSMutableArray new];

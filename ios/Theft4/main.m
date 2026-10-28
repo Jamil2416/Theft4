@@ -857,6 +857,14 @@ static void bootEvent(void *context, const char *event) {
         toggle.enabled = NO;
 #endif
     }];
+    _bringupOverlay.handlingPreset.selectedSegmentIndex =
+        MAX(0, MIN(2, [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
+    [_bringupOverlay.handlingPreset addTarget:self action:@selector(handlingPresetChanged:)
+        forControlEvents:UIControlEventValueChanged];
+#ifndef THEFT4_HAS_GAME_STARTUP
+    _bringupOverlay.handlingPreset.selectedSegmentIndex = 0;
+    _bringupOverlay.handlingPreset.enabled = NO;
+#endif
 #ifndef THEFT4_HAS_GTA4_NATIVE_BACKEND
     _bringupOverlay.godMode.on = NO;
     _bringupOverlay.unlimitedAmmo.on = NO;
@@ -1958,6 +1966,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (!key) return;
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:key];
     if (_executionAttempted) [Theft4ModMenu applyPersistedSettings];
+}
+
+- (void)handlingPresetChanged:(UISegmentedControl *)sender {
+    [NSUserDefaults.standardUserDefaults setInteger:sender.selectedSegmentIndex forKey:@"Theft4ModHandling"];
 }
 
 - (void)customTimeCycleChanged:(UISwitch *)sender {
@@ -3351,6 +3363,19 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (timeCycle) setenv("THEFT4_MOD_TIMECYCLE_DIRECTORY",
             timeCycle.stringByDeletingLastPathComponent.fileSystemRepresentation, 1);
         else unsetenv("THEFT4_MOD_TIMECYCLE_DIRECTORY");
+        // Vehicle handling preset (saved by the launcher or the mod menu).
+        const NSInteger handling = MAX(0, MIN(2,
+            [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
+        NSString *handlingBase = handling ? [NSBundle.mainBundle pathForResource:@"handling-base"
+            ofType:@"dat" inDirectory:@"Mods/RealisticHandling"] : nil;
+        if (handlingBase) {
+            setenv("THEFT4_MOD_HANDLING", handling == 2 ? "2" : "1", 1);
+            setenv("THEFT4_MOD_HANDLING_DIRECTORY",
+                handlingBase.stringByDeletingLastPathComponent.fileSystemRepresentation, 1);
+        } else {
+            unsetenv("THEFT4_MOD_HANDLING");
+            unsetenv("THEFT4_MOD_HANDLING_DIRECTORY");
+        }
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
         NSString *preparationRoot = [_supportURL.path
             stringByAppendingPathComponent:@"texture-preparation"];

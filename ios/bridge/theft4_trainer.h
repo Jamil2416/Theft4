@@ -39,6 +39,9 @@ typedef enum {
     THEFT4_TRAINER_PED_DENSITY,       // percent, 0-200 in steps of 25
     THEFT4_TRAINER_POLICE_RESPONSE,   // 0 relaxed, 1 normal, 2 aggressive, 3 relentless
     THEFT4_TRAINER_HIDE_HUD,
+    THEFT4_TRAINER_BOOST_STRENGTH,    // 1-10
+    THEFT4_TRAINER_EXTRA_TRAFFIC,     // 0 off, 1 sports cars, 2 police, 3 unusual vehicles
+    THEFT4_TRAINER_EXTRA_TRAFFIC_RATE,// seconds between added vehicles, 2-15
     THEFT4_TRAINER_SETTING_COUNT
 } theft4_trainer_setting;
 
@@ -64,6 +67,8 @@ typedef enum {
     THEFT4_TRAINER_LOAD_POSITION,
     THEFT4_TRAINER_GIVE_ALL_WEAPONS,
     THEFT4_TRAINER_REMOVE_ALL_WEAPONS,
+    THEFT4_TRAINER_BOOST_FORWARD,
+    THEFT4_TRAINER_BOOST_UP,
     THEFT4_TRAINER_ACTION_COUNT
 } theft4_trainer_action;
 

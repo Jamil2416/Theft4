@@ -20,7 +20,7 @@ add_executable(timecycle_archive_test timecycle_archive_test.cpp
     "${SDK}/thirdparty/crypto/rijndael-alg-fst.c")
 target_include_directories(timecycle_archive_test PRIVATE
     "${ROOT}/ios/bridge" "${SDK}/thirdparty/crypto")
-target_link_libraries(timecycle_archive_test PRIVATE rex::filesystem xxHash::xxhash)
+target_link_libraries(timecycle_archive_test PRIVATE rex::filesystem xxHash::xxhash z)
 target_compile_options(timecycle_archive_test PRIVATE -UNDEBUG)
 add_test(NAME timecycle_archive_test COMMAND timecycle_archive_test
     "${ROOT}/ios/Theft4/Mods/CustomTimeCycle")

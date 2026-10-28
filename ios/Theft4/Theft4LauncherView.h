@@ -48,6 +48,8 @@
 // Further trainer switches on the Mods page, keyed by user-defaults key
 // (the keys in Theft4ModMenu's persistentSettings).
 @property(nonatomic, readonly) NSDictionary<NSString *, UISwitch *> *trainerSwitches;
+// 0 Original, 1 Realistic (Realistic Handling & Physics), 2 Jelly.
+@property(nonatomic, readonly) UISegmentedControl *handlingPreset;
 @property(nonatomic, readonly) UIButton *frameSpeedButton;
 @property(nonatomic, readonly) UIButton *restoreGraphicsButton;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY

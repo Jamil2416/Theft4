@@ -129,6 +129,8 @@ enum class N : int {
   GET_GAME_CAM, SET_PLAYER_CONTROL,
   SET_MOBILE_RADIO_ENABLED_DURING_GAMEPLAY, RETUNE_RADIO_UP, RETUNE_RADIO_DOWN,
   SKIP_RADIO_FORWARD,
+  APPLY_FORCE_TO_CAR, GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING, CREATE_RANDOM_CHAR_AS_DRIVER,
+  CREATE_CHAR_INSIDE_CAR, TASK_CAR_DRIVE_WANDER, MARK_CHAR_AS_NO_LONGER_NEEDED, CAM_IS_SPHERE_VISIBLE,
   COUNT
 };
 
@@ -161,6 +163,8 @@ constexpr std::array<std::string_view, size_t(N::COUNT)> kNames = {
   "GET_GAME_CAM", "SET_PLAYER_CONTROL",
   "SET_MOBILE_RADIO_ENABLED_DURING_GAMEPLAY", "RETUNE_RADIO_UP", "RETUNE_RADIO_DOWN",
   "SKIP_RADIO_FORWARD",
+  "APPLY_FORCE_TO_CAR", "GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING", "CREATE_RANDOM_CHAR_AS_DRIVER",
+  "CREATE_CHAR_INSIDE_CAR", "TASK_CAR_DRIVE_WANDER", "MARK_CHAR_AS_NO_LONGER_NEEDED", "CAM_IS_SPHERE_VISIBLE",
 };
 
 // Guest handler per command, recorded as the game registers it.
@@ -283,6 +287,8 @@ struct Defaults {
     settings[THEFT4_TRAINER_TRAFFIC_DENSITY] = 100;
     settings[THEFT4_TRAINER_PED_DENSITY] = 100;
     settings[THEFT4_TRAINER_POLICE_RESPONSE] = 1;
+    settings[THEFT4_TRAINER_BOOST_STRENGTH] = 5;
+    settings[THEFT4_TRAINER_EXTRA_TRAFFIC_RATE] = 4;
   }
 } defaults;
 
@@ -524,8 +530,9 @@ void ApplyVehicle(Script& s, const Tick& t) {
 void VehicleActions(Script& s, const Tick& t) {
   const bool fix = Take(THEFT4_TRAINER_FIX_VEHICLE), explode = Take(THEFT4_TRAINER_EXPLODE_VEHICLE),
              burst = Take(THEFT4_TRAINER_BURST_TYRES), wash = Take(THEFT4_TRAINER_WASH_VEHICLE),
-             ground = Take(THEFT4_TRAINER_VEHICLE_ON_GROUND), remove = Take(THEFT4_TRAINER_DELETE_VEHICLE);
-  if (!(fix || explode || burst || wash || ground || remove)) return;
+             ground = Take(THEFT4_TRAINER_VEHICLE_ON_GROUND), remove = Take(THEFT4_TRAINER_DELETE_VEHICLE),
+             forward = Take(THEFT4_TRAINER_BOOST_FORWARD), up = Take(THEFT4_TRAINER_BOOST_UP);
+  if (!(fix || explode || burst || wash || ground || remove || forward || up)) return;
   if (!t.car) {
     SetStatus("Get in a vehicle first");
     return;
@@ -536,6 +543,19 @@ void VehicleActions(Script& s, const Tick& t) {
   if (burst) {
     for (uint32_t tyre = 0; tyre < 6; ++tyre) s.Call(N::BURST_CAR_TYRE, {t.car, tyre});
     SetStatus("Tyres burst");
+  }
+  const float strength = float(std::clamp(Setting(THEFT4_TRAINER_BOOST_STRENGTH), 1, 10));
+  if (forward) {
+    // Forward speed is in metres per second along the vehicle's heading.
+    s.Call(N::GET_CAR_SPEED, {t.car, Arg::Out(0)});
+    s.Call(N::SET_CAR_FORWARD_SPEED, {t.car, std::min(s.OutF(0) + strength * 5.0f, 90.0f)});
+    SetStatus("Boost forward");
+  }
+  if (up) {
+    // An upward push in the vehicle's own frame (force type 3, relative).
+    s.Call(N::APPLY_FORCE_TO_CAR, {t.car, 3u, 0.0f, 0.0f, strength * 2.0f, 0.0f, 0.0f, 0.0f,
+                                   0u, 1u, 1u, 1u});
+    SetStatus("Boost up");
   }
   if (explode) { s.Call(N::EXPLODE_CAR, {t.car, true, false}); SetStatus("Vehicle exploded"); }
   if (remove) {
@@ -552,6 +572,8 @@ void Spawn(Script& s, const Tick& t) {
   {
     std::lock_guard lock(spawn_mutex);
     if (!spawn_request.empty()) {
+      // A newer choice replaces one still loading.
+      if (state.spawn_hash) s.Call(N::MARK_MODEL_AS_NO_LONGER_NEEDED, {state.spawn_hash});
       state.spawn_model = std::move(spawn_request);
       spawn_request.clear();
       state.spawn_hash = ModelHash(state.spawn_model);
@@ -580,7 +602,9 @@ void Spawn(Script& s, const Tick& t) {
   }
   float fx, fy, fz;
   Forward(t.heading, 0, fx, fy, fz);
-  s.Call(N::CREATE_CAR, {state.spawn_hash, t.x + fx * 5.0f, t.y + fy * 5.0f, t.z + 0.5f, Arg::Out(0), true});
+  // Clear of the player, and of the front of the car they may be driving.
+  const float ahead = t.car ? 8.0f : 5.0f;
+  s.Call(N::CREATE_CAR, {state.spawn_hash, t.x + fx * ahead, t.y + fy * ahead, t.z + 0.5f, Arg::Out(0), true});
   const uint32_t car = s.Out(0);
   s.Call(N::MARK_MODEL_AS_NO_LONGER_NEEDED, {state.spawn_hash});
   state.spawn_hash = 0;
@@ -813,6 +837,120 @@ void ApplyWorld(Script& s, const Tick& t) {
   a.hide_hud = hide;
 }
 
+// Extra traffic: every few seconds one vehicle from the chosen group joins
+// the streets on a road node out of view, with a driver who wanders, and is
+// then handed to the world like any ambient vehicle. Models that are not in
+// the running game or episode are skipped.
+struct Injector {
+  uint64_t next = 0, deadline = 0;
+  uint32_t model = 0, driver = 0;
+  bool police = false;
+} injector;
+
+constexpr std::array<std::string_view, 12> kSportsTraffic = {
+  "banshee", "comet", "coquette", "feltzer", "infernus", "sultanrs", "supergt", "turismo",
+  "bullet", "f620", "superd", "buffalo"};
+constexpr std::array<std::string_view, 7> kPoliceTraffic = {
+  "police", "police2", "polpatriot", "noose", "police3", "police4", "fbi"};
+constexpr std::array<std::string_view, 20> kUnusualTraffic = {
+  "airtug", "ripley", "trash", "mrtasty", "bus", "flatbed", "biff", "mule", "yankee", "benson",
+  "packer", "phantom", "forklift", "steed", "boxville", "caddy", "avan", "firetruk", "ambulance",
+  "stockade"};
+// GTA IV's police ped type.
+constexpr uint32_t kPedTypeCop = 6;
+
+uint32_t Random(uint32_t limit) {
+  static uint32_t seed = uint32_t(NowMs()) | 1u;
+  seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+  return limit ? seed % limit : 0;
+}
+
+void ReleaseInjection(Script& s) {
+  if (injector.model) s.Call(N::MARK_MODEL_AS_NO_LONGER_NEEDED, {injector.model});
+  if (injector.driver) s.Call(N::MARK_MODEL_AS_NO_LONGER_NEEDED, {injector.driver});
+  injector.model = injector.driver = 0;
+}
+
+void ExtraTraffic(Script& s, const Tick& t) {
+  const int mode = std::clamp(Setting(THEFT4_TRAINER_EXTRA_TRAFFIC), 0, 3);
+  const uint64_t gap = uint64_t(std::clamp(Setting(THEFT4_TRAINER_EXTRA_TRAFFIC_RATE), 2, 15)) * 1000;
+  if (!mode) {
+    ReleaseInjection(s);
+    return;
+  }
+  if (!injector.model) {
+    if (t.now < injector.next) return;
+    std::string_view name;
+    if (mode == 1) name = kSportsTraffic[Random(kSportsTraffic.size())];
+    else if (mode == 2) name = kPoliceTraffic[Random(kPoliceTraffic.size())];
+    else name = kUnusualTraffic[Random(kUnusualTraffic.size())];
+    const uint32_t model = ModelHash(name);
+    s.Call(N::IS_MODEL_IN_CDIMAGE, {model});
+    if (!s.True()) {
+      injector.next = t.now + 250;  // not in this game or episode; pick again shortly
+      return;
+    }
+    injector.model = model;
+    injector.police = mode == 2;
+    injector.driver = 0;
+    if (injector.police) {
+      injector.driver = ModelHash(name == "noose" ? "m_y_swat" : "m_y_cop");
+      s.Call(N::REQUEST_MODEL, {injector.driver});
+    }
+    s.Call(N::REQUEST_MODEL, {model});
+    injector.deadline = t.now + 6000;
+    return;
+  }
+  s.Call(N::HAS_MODEL_LOADED, {injector.model});
+  bool loaded = s.True();
+  if (loaded && injector.driver) {
+    s.Call(N::HAS_MODEL_LOADED, {injector.driver});
+    loaded = s.True();
+  }
+  if (!loaded) {
+    if (t.now > injector.deadline) {
+      ReleaseInjection(s);
+      injector.next = t.now + gap;
+    }
+    return;
+  }
+  // A road node 90-140 m away, in a random direction, that the camera
+  // cannot see, so vehicles never appear in plain sight.
+  const float angle = float(Random(360)) * kPi / 180.0f;
+  const float distance = 90.0f + float(Random(50));
+  s.Call(N::GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING,
+         {t.x + std::cos(angle) * distance, t.y + std::sin(angle) * distance, t.z, 1u + Random(3),
+          Arg::Out(0), Arg::Out(1), Arg::Out(2), Arg::Out(3)});
+  const float x = s.OutF(0), y = s.OutF(1), z = s.OutF(2), heading = s.OutF(3);
+  const float dx = x - t.x, dy = y - t.y;
+  if ((x == 0.0f && y == 0.0f) || dx * dx + dy * dy < 60.0f * 60.0f) {
+    if (t.now > injector.deadline) { ReleaseInjection(s); injector.next = t.now + gap; }
+    return;  // try another node next frame
+  }
+  s.Call(N::GET_GAME_CAM, {Arg::Out(0)});
+  s.Call(N::CAM_IS_SPHERE_VISIBLE, {s.Out(0), x, y, z, 4.0f});
+  if (s.True()) {
+    if (t.now > injector.deadline) { ReleaseInjection(s); injector.next = t.now + gap; }
+    return;
+  }
+  s.Call(N::CREATE_CAR, {injector.model, x, y, z + 0.5f, Arg::Out(0), true});
+  const uint32_t car = s.Out(0);
+  if (car) {
+    s.Call(N::SET_CAR_HEADING, {car, heading});
+    s.Call(N::SET_CAR_ON_GROUND_PROPERLY, {car});
+    if (injector.police) s.Call(N::CREATE_CHAR_INSIDE_CAR, {car, kPedTypeCop, injector.driver, Arg::Out(1)});
+    else s.Call(N::CREATE_RANDOM_CHAR_AS_DRIVER, {car, Arg::Out(1)});
+    const uint32_t driver = s.Out(1);
+    if (driver) {
+      s.Call(N::TASK_CAR_DRIVE_WANDER, {driver, car, injector.police ? 14.0f : 11.0f, 0u});
+      s.Call(N::MARK_CHAR_AS_NO_LONGER_NEEDED, {Arg::Out(2, driver)});
+    }
+    s.Call(N::MARK_CAR_AS_NO_LONGER_NEEDED, {Arg::Out(3, car)});
+  }
+  ReleaseInjection(s);
+  injector.next = t.now + gap;
+}
+
 void Run(PPCContext& ctx, uint8_t* base) {
   const uint64_t now = NowMs();
   // Every running script calls WAIT; run once per game frame at most.
@@ -846,6 +984,7 @@ void Run(PPCContext& ctx, uint8_t* base) {
 
   ApplyWorld(s, t);
   if (t.dead) return;
+  ExtraTraffic(s, t);
   ApplyPlayer(s, t);
   ApplyVehicle(s, t);
   VehicleActions(s, t);
