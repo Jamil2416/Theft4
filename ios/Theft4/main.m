@@ -3387,11 +3387,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }];
 }
 
-// File > Return to Start Menu. The runtime runs once per process, so this
-// closes the game the same way as the game menu's Quit Game.
+// File > Quit Game. The runtime runs once per process, so this closes the
+// game the same way as the game menu's Quit Game.
 - (void)confirmReturnToStartMenu {
     if (!_gamePresentation || self.presentedViewController) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"RETURN TO START MENU"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"QUIT GAME"
         message:@"This ends the game session and closes Theft4. Unsaved progress is lost. Reopen the app to see the start menu."
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Quit Game" style:UIAlertActionStyleDestructive
@@ -3446,8 +3446,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (execute) {
         // Resolve the shipped asset before consuming this one-shot runtime.
         // Disabling the mod explicitly clears any previous launch override.
-        setenv("THEFT4_MOD_GOD_MODE", _bringupOverlay.godMode.on ? "1" : "0", 1);
-        setenv("THEFT4_MOD_UNLIMITED_AMMO", _bringupOverlay.unlimitedAmmo.on ? "1" : "0", 1);
+        // File > Cheats Off keeps both off from the first frame.
+        const BOOL cheats = Theft4ModMenu.cheatsEnabled;
+        setenv("THEFT4_MOD_GOD_MODE", cheats && _bringupOverlay.godMode.on ? "1" : "0", 1);
+        setenv("THEFT4_MOD_UNLIMITED_AMMO", cheats && _bringupOverlay.unlimitedAmmo.on ? "1" : "0", 1);
         NSString *timeCycle = _bringupOverlay.customTimeCycle.on
             ? [NSBundle.mainBundle pathForResource:@"timecyc" ofType:@"dat"
                 inDirectory:@"Mods/CustomTimeCycle"] : nil;
@@ -3763,10 +3765,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         action:@selector(startThirtySecondCapture:) propertyList:nil];
     UICommand *show = [UICommand commandWithTitle:@"Show Recordings in Files" image:nil
         action:@selector(showRecordingsInFiles:) propertyList:nil];
-    UICommand *quit = [UICommand commandWithTitle:@"Return to Start Menu…" image:nil
+    UICommand *quit = [UICommand commandWithTitle:@"Quit Game…" image:nil
         action:@selector(returnToStartMenu:) propertyList:nil];
+    // Every mod-menu and launcher cheat at once; the choice is kept.
+    UIMenu *cheats = [UIMenu menuWithTitle:@"Cheats" image:nil identifier:@"com.theft4.cheats" options:0 children:@[
+        [UICommand commandWithTitle:@"On" image:nil action:@selector(setCheatsCommand:) propertyList:@YES],
+        [UICommand commandWithTitle:@"Off" image:nil action:@selector(setCheatsCommand:) propertyList:@NO]]];
     [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.capture"
-        options:UIMenuOptionsDisplayInline children:@[capture, show, quit]] atEndOfMenuForIdentifier:UIMenuFile];
+        options:UIMenuOptionsDisplayInline children:@[capture, show, cheats, quit]] atEndOfMenuForIdentifier:UIMenuFile];
 
     // Format: Illumination (light-bar brightness) in place of Font, and
     // Rumble (strength) in place of Text. Turning rumble off is the game's
@@ -3809,6 +3815,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [[self launcherController] setRumbleStrength:[command.propertyList integerValue]];
 }
 
+- (void)setCheatsCommand:(UICommand *)command {
+    [Theft4ModMenu setCheatsEnabled:[command.propertyList boolValue]];
+}
+
 - (void)showRecordingsInFiles:(__unused UICommand *)command {
     [[self activeGameController] showRecordingsInFiles];
 }
@@ -3841,6 +3851,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         command.attributes = settings ? 0 : UIMenuElementAttributesDisabled;
         command.state = settings && current == [command.propertyList integerValue] ? UIMenuElementStateOn
                                                                                    : UIMenuElementStateOff;
+        return;
+    }
+    if (command.action == @selector(setCheatsCommand:)) {
+        command.state = Theft4ModMenu.cheatsEnabled == [command.propertyList boolValue]
+            ? UIMenuElementStateOn : UIMenuElementStateOff;
         return;
     }
     if (command.action == @selector(showRecordingsInFiles:)) {

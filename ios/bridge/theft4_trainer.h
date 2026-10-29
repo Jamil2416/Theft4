@@ -83,6 +83,10 @@ uint32_t theft4_trainer_status(char* message, size_t capacity);
 // 1 once the game has registered its script commands and the trainer has
 // run inside a script thread within the last two seconds.
 int theft4_trainer_active(void);
+// File > Cheats: 0 makes every cheat read as off (and undoes those applied),
+// 1 restores the player's choices.
+void theft4_trainer_set_enabled(int enabled);
+int theft4_trainer_enabled(void);
 // One short line each, for the mod menu's Diagnostics page and log exports:
 // how far the trainer got (commands registered, WAIT wrapped, frames run)
 // and what the launcher's episode choice saw at the game's start screen.

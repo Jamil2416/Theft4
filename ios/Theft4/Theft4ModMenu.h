@@ -55,4 +55,7 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 + (NSDictionary<NSString *, NSNumber *> *)persistentSettings;
 // Copies the persisted values into the trainer before the game starts.
 + (void)applyPersistedSettings;
+// File > Cheats, saved across launches; off makes every cheat inactive.
++ (BOOL)cheatsEnabled;
++ (void)setCheatsEnabled:(BOOL)enabled;
 @end

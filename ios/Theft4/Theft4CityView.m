@@ -35,8 +35,7 @@ static void CityCable(SCNNode *root, SCNVector3 a, SCNVector3 b, SCNMaterial *m,
     [root addChildNode:node];
 }
 
-// Original procedural window lights, not game art or a downloaded texture,
-// in The Ballad of Gay Tony's neon: yellow, pink, purple and blue.
+// Original procedural window lights, not game art or a downloaded texture.
 static UIImage *CityWindows(unsigned seed) {
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = 1;
@@ -48,8 +47,7 @@ static UIImage *CityWindows(unsigned seed) {
         for (int y=5; y<128; y+=10) for (int x=5; x<64; x+=10) {
             random = random * 1664525u + 1013904223u;
             if ((random >> 24) < 130) continue;
-            static const unsigned neon[] = {0xF5C82E, 0xE0157A, 0x9B4FB5, 0x4AA8DC};
-            [[CityColor(neon[(random >> 3) & 3])
+            [[CityColor((random & 1) ? 0xD1A66B : 0x91B1AE)
                 colorWithAlphaComponent:0.25 + (random % 65)/100.0] setFill];
             UIRectFill(CGRectMake(x,y,3,5));
         }

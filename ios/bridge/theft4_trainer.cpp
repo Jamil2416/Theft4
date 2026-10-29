@@ -23,6 +23,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <rex/logging.h>
 #include <rex/runtime.h>
@@ -133,7 +134,7 @@ enum class N : int {
   APPLY_FORCE_TO_CAR, GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING, CREATE_RANDOM_CHAR_AS_DRIVER,
   CREATE_CHAR_INSIDE_CAR, TASK_CAR_DRIVE_WANDER, MARK_CHAR_AS_NO_LONGER_NEEDED, CAM_IS_SPHERE_VISIBLE,
   IS_CHAR_SHOOTING, GET_CURRENT_CHAR_WEAPON, ADD_EXPLOSION, GET_CLOSEST_CHAR, GET_CLOSEST_CAR,
-  GET_CAR_COORDINATES,
+  GET_CAR_COORDINATES, GET_CURRENT_EPISODE,
   COUNT
 };
 
@@ -169,7 +170,7 @@ constexpr std::array<std::string_view, size_t(N::COUNT)> kNames = {
   "APPLY_FORCE_TO_CAR", "GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING", "CREATE_RANDOM_CHAR_AS_DRIVER",
   "CREATE_CHAR_INSIDE_CAR", "TASK_CAR_DRIVE_WANDER", "MARK_CHAR_AS_NO_LONGER_NEEDED", "CAM_IS_SPHERE_VISIBLE",
   "IS_CHAR_SHOOTING", "GET_CURRENT_CHAR_WEAPON", "ADD_EXPLOSION", "GET_CLOSEST_CHAR", "GET_CLOSEST_CAR",
-  "GET_CAR_COORDINATES",
+  "GET_CAR_COORDINATES", "GET_CURRENT_EPISODE",
 };
 
 // Guest handler per command, recorded as the game registers it.
@@ -291,9 +292,30 @@ void SetStatus(std::string message) {
   status_counter.fetch_add(1, std::memory_order_release);
 }
 
-int Setting(theft4_trainer_setting s) { return settings[s].load(std::memory_order_relaxed); }
+// File > Cheats. While cheats are off every setting reads as its default, so
+// each feature's own switch-off path undoes it, and actions are dropped. The
+// time of day, weather and wanted level are applied only when they change,
+// so they keep their value rather than jumping to a default.
+std::atomic<bool> cheats_enabled{true};
+std::array<int, THEFT4_TRAINER_SETTING_COUNT> default_values{};
+
+int Setting(theft4_trainer_setting s) {
+  const int value = settings[s].load(std::memory_order_relaxed);
+  if (cheats_enabled.load(std::memory_order_relaxed)) return value;
+  switch (s) {
+    case THEFT4_TRAINER_HOUR:
+    case THEFT4_TRAINER_WEATHER:
+    case THEFT4_TRAINER_WANTED_LEVEL:
+      return value;
+    default:
+      return default_values[s];
+  }
+}
 bool On(theft4_trainer_setting s) { return Setting(s) != 0; }
-bool Take(theft4_trainer_action a) { return pending[a].exchange(false, std::memory_order_acq_rel); }
+bool Take(theft4_trainer_action a) {
+  const bool taken = pending[a].exchange(false, std::memory_order_acq_rel);
+  return taken && cheats_enabled.load(std::memory_order_relaxed);
+}
 
 struct Defaults {
   Defaults() {
@@ -307,6 +329,8 @@ struct Defaults {
     settings[THEFT4_TRAINER_POLICE_RESPONSE] = 1;
     settings[THEFT4_TRAINER_BOOST_STRENGTH] = 5;
     settings[THEFT4_TRAINER_EXTRA_TRAFFIC_RATE] = 4;
+    for (size_t i = 0; i < default_values.size(); ++i)
+      default_values[i] = settings[i].load(std::memory_order_relaxed);
   }
 } defaults;
 
@@ -587,6 +611,18 @@ void VehicleActions(Script& s, const Tick& t) {
 }
 
 void Spawn(Script& s, const Tick& t) {
+  if (!cheats_enabled.load(std::memory_order_relaxed)) {
+    // Drop new requests and release a model still loading.
+    {
+      std::lock_guard lock(spawn_mutex);
+      spawn_request.clear();
+    }
+    if (state.spawn_hash) {
+      s.Call(N::MARK_MODEL_AS_NO_LONGER_NEEDED, {state.spawn_hash});
+      state.spawn_hash = 0;
+    }
+    return;
+  }
   {
     std::lock_guard lock(spawn_mutex);
     if (!spawn_request.empty()) {
@@ -969,22 +1005,139 @@ void ExtraTraffic(Script& s, const Tick& t) {
   injector.next = t.now + gap;
 }
 
-// Explosive Rounds. No script command reports where a bullet lands, so each
-// shot follows the gameplay camera's aim line, the line bullets travel
-// along: the explosion goes on the first ped or vehicle near the line, or
-// where it meets the ground. A wall is not seen, so a shot into one explodes
-// on the ground beyond it. Works for whichever character is playing.
+// Explosive Rounds.
+//
+// In The Ballad of Gay Tony this takes the game's own route for Luis's
+// explosive AA-12 (EPISODIC_10 in TBoGT's WeaponInfo.xml): an instant-hit
+// weapon whose damage type is EXPLOSIVE explodes where its bullet really
+// lands, walls included. The current gun's damage type is switched to
+// EXPLOSIVE while it is held and restored afterwards. The game keeps that
+// path for TBoGT only (FusionFix has to patch it to reach GTA IV on PC), so
+// in the base game each shot instead follows the gameplay camera's aim line:
+// the explosion goes on the first ped or vehicle near the line, or where it
+// meets the ground, and a shot into a wall explodes on the ground beyond it.
+//
+// The weapon table's layout is not published. It is found and proved at run
+// time from four TBoGT entries whose values WeaponInfo.xml gives, and nothing
+// is written unless every check passes.
+
+// Big-endian float bits of the WeaponInfo.xml ranges used as anchors.
+constexpr uint32_t kRange45 = 0x42340000, kRange50 = 0x42480000, kRange65 = 0x42820000,
+                   kRange70 = 0x428C0000, kRange200 = 0x43480000;
+// TU8 weapon types of the anchors.
+constexpr uint32_t kTypeDeagle = 9, kTypeMinigun = 20, kTypeAA12Explosive = 30,
+                   kTypeEpisodic14 = 34;
+
+struct WeaponTable {
+  enum Status { kUnsearched, kSearching, kFound, kMissing } status = kUnsearched;
+  uint32_t scan = 0;          // next address to scan
+  uint32_t range0 = 0;        // targetrange field of weapon type 0
+  uint32_t stride = 0;        // bytes per weapon entry
+  int32_t damage = 0;         // damage type field, relative to targetrange
+  uint32_t explosive = 0;     // EXPLOSIVE damage type value
+  uint32_t bullet = 0;        // BULLET damage type value
+  int32_t patched = -1;       // weapon type currently switched to EXPLOSIVE
+} weapons;  // only touched from inside the WAIT wrapper
+
+std::atomic<int> diag_weapon_table{0};   // WeaponTable::Status
+std::atomic<int> diag_explosive_path{0}; // 0 off, 1 game route (TBoGT), 2 aim line
+
+bool PairAt(uint8_t* base, uint32_t address, uint32_t first, uint32_t second) {
+  return Span(base, address, 8) && Read(base, address) == first && Read(base, address + 4) == second;
+}
+
+// Given candidate targetrange addresses of the minigun and the explosive
+// AA-12, proves the table and finds its damage type field.
+bool ProveWeaponTable(uint8_t* base, uint32_t minigun, uint32_t aa12) {
+  if (aa12 <= minigun) return false;
+  const uint32_t span = aa12 - minigun, types = kTypeAA12Explosive - kTypeMinigun;
+  if (span % types) return false;
+  const uint32_t stride = span / types;
+  if (stride < 64 || stride > 2048 || minigun < kTypeMinigun * stride) return false;
+  const uint32_t range0 = minigun - kTypeMinigun * stride;
+  const uint32_t deagle = range0 + kTypeDeagle * stride, ep14 = range0 + kTypeEpisodic14 * stride;
+  if (!PairAt(base, deagle, kRange45, kRange50) || !PairAt(base, ep14, kRange65, kRange70)) return false;
+  for (uint32_t anchor : {minigun, aa12, deagle, ep14})
+    if (anchor < 32 || !Span(base, anchor - 32, 32)) return false;
+  // The damage type field is the one where the two EXPLOSIVE weapons agree,
+  // the two BULLET weapons agree, and the two values differ. Exactly one
+  // field before the ranges must qualify.
+  int32_t found = 0;
+  uint32_t explosive = 0, bullet = 0;
+  int matches = 0;
+  for (int32_t offset = -4; offset >= -32; offset -= 4) {
+    const uint32_t a = Read(base, uint32_t(aa12 + offset)), m = Read(base, uint32_t(minigun + offset));
+    const uint32_t d = Read(base, uint32_t(deagle + offset)), e = Read(base, uint32_t(ep14 + offset));
+    if (a == m && d == e && a != d && a < 32 && d < 32) {
+      ++matches;
+      found = offset;
+      explosive = a;
+      bullet = d;
+    }
+  }
+  if (matches != 1) return false;
+  weapons.range0 = range0;
+  weapons.stride = stride;
+  weapons.damage = found;
+  weapons.explosive = explosive;
+  weapons.bullet = bullet;
+  return true;
+}
+
+// Scans a slice of the game image each call (the table is static game data)
+// so no frame stalls.
+void SearchWeaponTable(uint8_t* base) {
+  constexpr uint32_t kBegin = uint32_t(REX_IMAGE_BASE), kEnd = uint32_t(REX_IMAGE_BASE + REX_IMAGE_SIZE);
+  constexpr uint32_t kSlice = 2u << 20;
+  if (weapons.status == WeaponTable::kUnsearched) {
+    weapons.status = WeaponTable::kSearching;
+    weapons.scan = kBegin;
+    diag_weapon_table.store(int(weapons.status), std::memory_order_relaxed);
+  }
+  static std::vector<uint32_t> minigun, aa12;
+  const uint32_t end = std::min(kEnd, weapons.scan + kSlice);
+  for (uint32_t address = weapons.scan; address + 8 <= end; address += 4) {
+    // Unmapped pages are skipped whole.
+    if ((address & 0xFFF) == 0 && !Span(base, address, 0x1000)) {
+      address += 0x1000 - 4;
+      continue;
+    }
+    // The pair's second word may sit in the next page.
+    if ((address & 0xFFF) == 0xFFC && !Span(base, address, 8)) continue;
+    const uint32_t first = Read(base, address);
+    if (first == kRange50 && Read(base, address + 4) == kRange200 && minigun.size() < 64) minigun.push_back(address);
+    if (first == kRange65 && Read(base, address + 4) == kRange70 && aa12.size() < 64) aa12.push_back(address);
+  }
+  weapons.scan = end;
+  if (end < kEnd) return;
+  for (uint32_t m : minigun)
+    for (uint32_t a : aa12)
+      if (ProveWeaponTable(base, m, a)) {
+        weapons.status = WeaponTable::kFound;
+        diag_weapon_table.store(int(weapons.status), std::memory_order_relaxed);
+        return;
+      }
+  weapons.status = WeaponTable::kMissing;
+  diag_weapon_table.store(int(weapons.status), std::memory_order_relaxed);
+}
+
+uint32_t DamageField(uint32_t type) {
+  return uint32_t(int64_t(weapons.range0) + int64_t(type) * weapons.stride + weapons.damage);
+}
+
+void RestorePatchedWeapon(uint8_t* base) {
+  if (weapons.patched < 0) return;
+  const uint32_t field = DamageField(uint32_t(weapons.patched));
+  if (Span(base, field, 4, true) && Read(base, field) == weapons.explosive) Write(base, field, weapons.bullet);
+  weapons.patched = -1;
+}
+
 uint64_t next_round_ms = 0;  // only touched from inside the WAIT wrapper
 
-void ExplosiveRounds(Script& s, const Tick& t) {
-  if (!On(THEFT4_TRAINER_EXPLOSIVE_ROUNDS) || t.now < next_round_ms) return;
+void AimLineRound(Script& s, const Tick& t) {
+  if (t.now < next_round_ms) return;
   s.Call(N::IS_CHAR_SHOOTING, {t.ped});
   if (!s.True()) return;
-  // Firearms only: unarmed, melee, thrown weapons and the rocket launcher
-  // (TU8 types 0-6 and 18) keep their own behaviour.
-  s.Call(N::GET_CURRENT_CHAR_WEAPON, {t.ped, Arg::Out(0)});
-  const uint32_t weapon = s.Out(0);
-  if (weapon <= 6 || weapon == 18) return;
   // One explosion per shot: automatic weapons fire about ten rounds a second.
   next_round_ms = t.now + 180;
 
@@ -1033,6 +1186,40 @@ void ExplosiveRounds(Script& s, const Tick& t) {
   s.Call(N::ADD_EXPLOSION, {hx, hy, hz, 0u, 3.0f, true, false, 0.4f});
 }
 
+void ExplosiveRounds(Script& s, const Tick& t, uint8_t* base) {
+  const bool want = On(THEFT4_TRAINER_EXPLOSIVE_ROUNDS);
+  uint32_t weapon = 0;
+  if (want) {
+    s.Call(N::GET_CURRENT_CHAR_WEAPON, {t.ped, Arg::Out(0)});
+    weapon = s.Out(0);
+  }
+  // Firearms only: unarmed, melee, thrown weapons, the rocket launcher and
+  // the flamethrower (TU8 types 0-6, 18 and 19) keep their own behaviour.
+  // Types past EPISODIC_24 (44) are not weapons in the table.
+  const bool firearm = want && weapon > 6 && weapon != 18 && weapon != 19 && weapon <= 44;
+  bool tbogt = false;
+  if (want) {
+    s.Call(N::GET_CURRENT_EPISODE);
+    tbogt = s.Ret() == 2;
+  }
+  if (tbogt && weapons.status != WeaponTable::kFound && weapons.status != WeaponTable::kMissing)
+    SearchWeaponTable(base);
+  const bool game_route = tbogt && weapons.status == WeaponTable::kFound;
+
+  if (weapons.patched >= 0 && (!game_route || !firearm || uint32_t(weapons.patched) != weapon))
+    RestorePatchedWeapon(base);
+  if (game_route && firearm && weapons.patched < 0) {
+    // Only a gun whose damage type is BULLET is switched.
+    const uint32_t field = DamageField(weapon);
+    if (Span(base, field, 4, true) && Read(base, field) == weapons.bullet) {
+      Write(base, field, weapons.explosive);
+      weapons.patched = int32_t(weapon);
+    }
+  }
+  diag_explosive_path.store(!want ? 0 : game_route ? 1 : 2, std::memory_order_relaxed);
+  if (want && firearm && !game_route) AimLineRound(s, t);
+}
+
 void Run(PPCContext& ctx, uint8_t* base) {
   const uint64_t now = NowMs();
   // Every running script calls WAIT; run once per game frame at most.
@@ -1070,7 +1257,7 @@ void Run(PPCContext& ctx, uint8_t* base) {
   if (t.dead) return;
   ExtraTraffic(s, t);
   ApplyPlayer(s, t);
-  ExplosiveRounds(s, t);
+  ExplosiveRounds(s, t, base);
   ApplyVehicle(s, t);
   VehicleActions(s, t);
   Spawn(s, t);
@@ -1142,15 +1329,30 @@ void theft4_trainer_diagnostics(char* text, size_t capacity) {
                    : "WAIT not seen";
   const int playing = diag_playing.load(std::memory_order_relaxed);
   const int failed = diag_last_failed.load(std::memory_order_relaxed);
+  static const char* const kTable[] = {"not searched", "searching", "found", "not found"};
+  static const char* const kPath[] = {"off", "game route", "aim line"};
   std::snprintf(text, capacity,
                 "Cmds %u (%zu/%zu used, %u unreadable) · %s · WAIT calls %llu · frames %llu · "
-                "playing %s · failed calls %llu%s%s",
+                "playing %s · explosive rounds %s, weapon table %s · failed calls %llu%s%s",
                 registered, found, kNames.size(), diag_unreadable_names.load(std::memory_order_relaxed),
                 wait, (unsigned long long)diag_wrapper_calls.load(std::memory_order_relaxed),
                 (unsigned long long)diag_frames.load(std::memory_order_relaxed),
                 playing < 0 ? "?" : playing ? "yes" : "no",
+                kPath[diag_explosive_path.load(std::memory_order_relaxed)],
+                kTable[diag_weapon_table.load(std::memory_order_relaxed)],
                 (unsigned long long)diag_failed_calls.load(std::memory_order_relaxed),
                 failed >= 0 ? " last " : "", failed >= 0 ? kNames[size_t(failed)].data() : "");
+}
+
+void theft4_trainer_set_enabled(int enabled) {
+  cheats_enabled.store(enabled != 0, std::memory_order_relaxed);
+#ifdef THEFT4_HAS_GTA4_NATIVE_BACKEND
+  gta4::mods::ConfigureGameplay(On(THEFT4_TRAINER_GOD_MODE), On(THEFT4_TRAINER_UNLIMITED_AMMO));
+#endif
+}
+
+int theft4_trainer_enabled(void) {
+  return cheats_enabled.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 int theft4_trainer_active(void) {

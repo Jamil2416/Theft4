@@ -8,6 +8,7 @@
 #define TRAINER_RUN(a) theft4_trainer_run(a)
 #define TRAINER_SPAWN(m) theft4_trainer_spawn_vehicle(m)
 #define TRAINER_ACTIVE() theft4_trainer_active()
+#define TRAINER_SET_ENABLED(e) theft4_trainer_set_enabled(e)
 #else
 // Builds without the game runtime show the menu with nothing to drive.
 #define TRAINER_GET(s) 0
@@ -15,7 +16,10 @@
 #define TRAINER_RUN(a) ((void)0)
 #define TRAINER_SPAWN(m) ((void)0)
 #define TRAINER_ACTIVE() 0
+#define TRAINER_SET_ENABLED(e) ((void)0)
 #endif
+
+static NSString *const kCheatsEnabledKey = @"Theft4CheatsEnabled";
 
 static UIColor *Ink(uint32_t rgb) {
     return [UIColor colorWithRed:((rgb >> 16) & 255) / 255.0 green:((rgb >> 8) & 255) / 255.0
@@ -214,7 +218,7 @@ static const NSInteger kDefaultAccent = 2;
 
 + (NSString *)trainerDiagnostics {
 #ifdef THEFT4_HAS_GAME_STARTUP
-    char text[256] = {0};
+    char text[512] = {0};
     theft4_trainer_diagnostics(text, sizeof(text));
     return [NSString stringWithUTF8String:text] ?: @"";
 #else
@@ -252,8 +256,19 @@ static const NSInteger kDefaultAccent = 2;
 #endif
 }
 
++ (BOOL)cheatsEnabled {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    return ![defaults objectForKey:kCheatsEnabledKey] || [defaults boolForKey:kCheatsEnabledKey];
+}
+
++ (void)setCheatsEnabled:(BOOL)enabled {
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:kCheatsEnabledKey];
+    TRAINER_SET_ENABLED(enabled ? 1 : 0);
+}
+
 + (void)applyPersistedSettings {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    TRAINER_SET_ENABLED([self cheatsEnabled] ? 1 : 0);
     [[self persistentSettings] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSNumber *setting, BOOL *stop) {
         TRAINER_SET((theft4_trainer_setting)setting.integerValue, [defaults boolForKey:key] ? 1 : 0);
     }];
@@ -464,7 +479,7 @@ static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
         [self trainerToggle:@"Unlimited Ammo" help:@"Reserve ammo never runs out"
             setting:THEFT4_TRAINER_UNLIMITED_AMMO],
         [self trainerToggle:@"Explosive Rounds"
-            help:@"Your gunshots explode where they land: on the first person or vehicle in your aim, or the ground. Shots into walls explode beyond them"
+            help:@"TBoGT: your gun fires like the explosive AA-12, exploding where bullets land (others carrying the same gun too). Base game: explodes on the first person or vehicle in your aim, or the ground"
             setting:THEFT4_TRAINER_EXPLOSIVE_ROUNDS],
         [self trainerAction:@"Give All Weapons" help:@"Every weapon with full ammo"
             action:THEFT4_TRAINER_GIVE_ALL_WEAPONS],
@@ -698,6 +713,8 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
     Theft4ModItem *current = count ? items[selected] : nil;
     NSString *help = current.helpText ? current.helpText() : current.help;
     if (!TRAINER_ACTIVE() && !current.helpText) help = @"Mods start once you are in Liberty City";
+    else if (![Theft4ModMenu cheatsEnabled] && !current.helpText)
+        help = @"Cheats are off. Turn them on in File › Cheats";
     _help.text = help.length ? [@"(i) " stringByAppendingString:help] : @"";
     _status.hidden = CACurrentMediaTime() > _statusUntil;
     [self setNeedsLayout];
