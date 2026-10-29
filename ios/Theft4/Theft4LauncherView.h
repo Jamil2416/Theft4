@@ -5,10 +5,8 @@
 @property(nonatomic, readonly) UILabel *statusLabel;
 @property(nonatomic, readonly) UILabel *detailLabel;
 @property(nonatomic, readonly) UIButton *startButton;
-// Shares the start button's row: boots into The Ballad of Gay Tony.
-@property(nonatomic, readonly) UIButton *balladButton;
-// Under the start row: whether TBoGT is installed and how to add it. Empty
-// text hides the line.
+// Under the start button: whether every game file, TBoGT included, is
+// installed, and how to add what is missing. Empty text hides the line.
 - (void)setEpisodeStatus:(NSString *)text;
 @property(nonatomic, readonly) UIButton *prepareButton;
 @property(nonatomic, readonly) UIButton *restartButton;
@@ -16,10 +14,11 @@
 @property(nonatomic, readonly) UISwitch *showFPS;
 @property(nonatomic, readonly) UISwitch *showFrameTime;
 @property(nonatomic, readonly) UISwitch *showControls;
-// Controller light-bar color, 0-255 per channel.
+// Controller light-bar color, 0-255 per channel, and its brightness, 0-100%.
 @property(nonatomic, readonly) UISlider *lightRed;
 @property(nonatomic, readonly) UISlider *lightGreen;
 @property(nonatomic, readonly) UISlider *lightBlue;
+@property(nonatomic, readonly) UISlider *lightBrightness;
 // Plays a short pulse on connected controllers through iOS directly.
 @property(nonatomic, readonly) UIButton *testVibrationButton;
 @property(nonatomic, readonly) UILabel *vibrationTestResult;
@@ -48,8 +47,6 @@
 // Further trainer switches on the Mods page, keyed by user-defaults key
 // (the keys in Theft4ModMenu's persistentSettings).
 @property(nonatomic, readonly) NSDictionary<NSString *, UISwitch *> *trainerSwitches;
-// 0 Original, 1 Realistic (Realistic Handling & Physics), 2 Jelly.
-@property(nonatomic, readonly) UISegmentedControl *handlingPreset;
 @property(nonatomic, readonly) UIButton *frameSpeedButton;
 @property(nonatomic, readonly) UIButton *restoreGraphicsButton;
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY

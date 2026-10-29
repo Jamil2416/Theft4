@@ -35,7 +35,8 @@ static void CityCable(SCNNode *root, SCNVector3 a, SCNVector3 b, SCNMaterial *m,
     [root addChildNode:node];
 }
 
-// Original procedural window lights, not game art or a downloaded texture.
+// Original procedural window lights, not game art or a downloaded texture,
+// in The Ballad of Gay Tony's neon: yellow, pink, purple and blue.
 static UIImage *CityWindows(unsigned seed) {
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = 1;
@@ -47,7 +48,8 @@ static UIImage *CityWindows(unsigned seed) {
         for (int y=5; y<128; y+=10) for (int x=5; x<64; x+=10) {
             random = random * 1664525u + 1013904223u;
             if ((random >> 24) < 130) continue;
-            [[CityColor((random & 1) ? 0xD1A66B : 0x91B1AE)
+            static const unsigned neon[] = {0xF5C82E, 0xE0157A, 0x9B4FB5, 0x4AA8DC};
+            [[CityColor(neon[(random >> 3) & 3])
                 colorWithAlphaComponent:0.25 + (random % 65)/100.0] setFill];
             UIRectFill(CGRectMake(x,y,3,5));
         }
@@ -69,20 +71,20 @@ static UIImage *CityWindows(unsigned seed) {
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
-    self.backgroundColor = CityColor(0x090F13);
+    self.backgroundColor = CityColor(0x08040B);
     self.clipsToBounds = YES;
     self.accessibilityElementsHidden = YES;
     _sceneView = [[SCNView alloc] initWithFrame:self.bounds
         options:@{SCNPreferredRenderingAPIKey:@(SCNRenderingAPIMetal)}];
     _sceneView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _sceneView.backgroundColor = CityColor(0x090F13);
+    _sceneView.backgroundColor = CityColor(0x08040B);
     _sceneView.preferredFramesPerSecond = 30;
     _sceneView.antialiasingMode = SCNAntialiasingModeMultisampling2X;
     _sceneView.userInteractionEnabled = NO;
     [self addSubview:_sceneView];
     SCNScene *scene = [SCNScene new];
-    scene.background.contents = CityColor(0x090F13);
-    scene.fogColor = CityColor(0x0C171C);
+    scene.background.contents = CityColor(0x08040B);
+    scene.fogColor = CityColor(0x150A1C);
     scene.fogStartDistance = 35;
     scene.fogEndDistance = 112;
     scene.fogDensityExponent = 1.35;
@@ -90,32 +92,33 @@ static UIImage *CityWindows(unsigned seed) {
 
     SCNNode *ambient = [SCNNode new];
     ambient.light = [SCNLight new]; ambient.light.type = SCNLightTypeAmbient;
-    ambient.light.color = CityColor(0x769394); ambient.light.intensity = 410;
+    ambient.light.color = CityColor(0x7A5A96); ambient.light.intensity = 410;
     [root addChildNode:ambient];
     SCNNode *key = [SCNNode new]; key.light = [SCNLight new];
-    key.light.type = SCNLightTypeSpot; key.light.color = CityColor(0xFFD69A);
+    key.light.type = SCNLightTypeSpot; key.light.color = CityColor(0xFFB3D4);
     key.light.intensity = 2200; key.light.spotInnerAngle = 45; key.light.spotOuterAngle = 95;
     key.light.castsShadow = YES; key.light.shadowMapSize = CGSizeMake(1024,1024);
     key.light.shadowRadius = 3; key.light.shadowColor = [UIColor colorWithWhite:0 alpha:0.65];
     key.position = SCNVector3Make(-8,24,12); [key lookAt:SCNVector3Make(0,0,-2)];
     [root addChildNode:key];
     SCNNode *rim = [SCNNode new]; rim.light = [SCNLight new];
-    rim.light.type = SCNLightTypeOmni; rim.light.color = CityColor(0x739FAC);
+    rim.light.type = SCNLightTypeOmni; rim.light.color = CityColor(0x4AA8DC);
     rim.light.intensity = 950; rim.position = SCNVector3Make(13,11,-10);
     [root addChildNode:rim];
 
     SCNFloor *water = [SCNFloor new];
     water.reflectivity = 0.23; water.reflectionResolutionScaleFactor = 0.3;
     water.reflectionFalloffEnd = 13;
-    water.materials = @[CityMaterial(0x10252A, 0.22)];
+    water.materials = @[CityMaterial(0x140C22, 0.22)];
     [root addChildNode:[SCNNode nodeWithGeometry:water]];
-    SCNMaterial *land = CityMaterial(0x1A2425, 0.85);
-    SCNMaterial *road = CityMaterial(0x0D1315, 0.55);
-    SCNMaterial *iron = CityMaterial(0x56615B, 0.5);
-    SCNMaterial *gold = CityMaterial(0xC99857, 0.4);
-    gold.emission.contents = CityColor(0x805225);
-    SCNMaterial *lamp = CityMaterial(0xE7C394, 0.4);
-    lamp.emission.contents = CityColor(0xFFD6A0); lamp.emission.intensity = 2;
+    SCNMaterial *land = CityMaterial(0x1D1622, 0.85);
+    SCNMaterial *road = CityMaterial(0x0F0A12, 0.55);
+    SCNMaterial *iron = CityMaterial(0x544C5E, 0.5);
+    // Bridge cables glow neon pink.
+    SCNMaterial *gold = CityMaterial(0xE0157A, 0.4);
+    gold.emission.contents = CityColor(0xA0105A);
+    SCNMaterial *lamp = CityMaterial(0xF5D66A, 0.4);
+    lamp.emission.contents = CityColor(0xFFD95A); lamp.emission.intensity = 2;
 
     SCNNode *staticCity = [SCNNode new];
     // The city now surrounds the camera pivot. The larger foundations and
@@ -124,7 +127,7 @@ static UIImage *CityWindows(unsigned seed) {
     [staticCity addChildNode:CityBox(190,0.55,62,SCNVector3Make(0,0.28,43),land)];
     NSMutableArray<SCNMaterial *> *facades = [NSMutableArray new];
     for (unsigned i=0;i<7;++i) {
-        SCNMaterial *m = CityMaterial(i%2 ? 0x3E4946 : 0x323F43, 0.75);
+        SCNMaterial *m = CityMaterial(i%2 ? 0x3B3344 : 0x2F2838, 0.75);
         m.emission.contents = CityWindows(93+i*47); m.emission.intensity = 1.3;
         [facades addObject:m];
     }

@@ -6,7 +6,6 @@
 #include "theft4_metal_presenter.h"
 #include "theft4_motion_blur.h"
 #include "theft4_performance_defaults.h"
-#include "theft4_handling_mod.h"
 #include "theft4_marketplace_root.h"
 #include "theft4_mod_mount.h"
 #include "theft4_timecycle_archive.h"
@@ -538,26 +537,14 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
                     async_pipeline_override ? "launch override" : "Lab default");
 #endif
 #endif
-        // Vehicle handling preset: 0 original, 1 realistic, 2 jelly. The
-        // launcher passes the bundled mod directory with it.
-        const char* handling_value = std::getenv("THEFT4_MOD_HANDLING");
-        const char* handling_bundle = std::getenv("THEFT4_MOD_HANDLING_DIRECTORY");
-        const int handling = handling_value && handling_bundle && *handling_bundle
-            ? std::clamp(std::atoi(handling_value), 0, 2) : 0;
-        const auto handling_preset = static_cast<theft4::mods::HandlingPreset>(handling);
-        auto marketplace = theft4::ResolveMarketplaceRoot(game_directory, support);
-        if (handling && marketplace.path == theft4::EpisodeFolder(game_directory)) {
-            // Episodes read their handling as loose files: give the runtime an
-            // overlay of the episode folders with modified copies of those two.
-            try {
-                marketplace.path = theft4::mods::PrepareEpisodeHandling(marketplace.path,
-                    handling_bundle, support / "mods" / "episode-handling", handling_preset);
-                event(context, "Vehicle handling prepared for the episodes");
-            } catch (const std::exception& error) {
-                REXLOG_WARN("Theft4 episode handling unchanged: {}", error.what());
-                event(context, (std::string("Episode vehicle handling unchanged: ") + error.what()).c_str());
-            }
+        // The removed vehicle handling mods left private copies of
+        // common.rpf and the episode folders here; free that space.
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(support / "mods" / "handling", ignored);
+            std::filesystem::remove_all(support / "mods" / "episode-handling", ignored);
         }
+        const auto marketplace = theft4::ResolveMarketplaceRoot(game_directory, support);
         REXLOG_INFO("Theft4 episodes: {} (marketplace root {})", marketplace.summary,
                     marketplace.path.string());
         rex::Runtime runtime(game_directory, support / "user",
@@ -701,19 +688,6 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
             event(context, archive.empty()
                 ? "Custom Time Cycle by SBerrix enabled for loose game files"
                 : "Custom Time Cycle by SBerrix enabled for packed and loose game files");
-        }
-        if (handling) {
-            event(context, handling == 2 ? "Preparing Jelly vehicle handling; original game files preserved"
-                                         : "Preparing Realistic Handling & Physics by Shturmovik2; original game files preserved");
-            try {
-                const auto prepared = theft4::mods::PrepareBaseHandling(game_directory, handling_bundle,
-                    support / "mods" / "handling", handling_preset);
-                theft4::mods::MountBaseHandling(*runtime.file_system(), prepared);
-                event(context, "Vehicle handling enabled");
-            } catch (const std::exception& error) {
-                REXLOG_WARN("Theft4 vehicle handling unchanged: {}", error.what());
-                event(context, (std::string("Vehicle handling unchanged: ") + error.what()).c_str());
-            }
         }
         event(context, "Xbox services initialized; resolving game imports and applying TU8");
         if (runtime.LoadXexImage("game:/default.xex") != 0)

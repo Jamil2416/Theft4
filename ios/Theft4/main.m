@@ -39,6 +39,15 @@ extern int rex_gta4_native_profile_status(void);
 #ifdef THEFT4_HAS_GAME_LOADER
 #include "theft4_boot.h"
 #endif
+#ifdef THEFT4_HAS_GAME_STARTUP
+// The iOS controller driver's rumble strength, 0...1.
+void rex_ios_input_set_rumble_strength(float strength);
+#endif
+
+static NSString *const kLightBrightnessKey = @"Theft4LightBrightness";
+static NSString *const kRumbleStrengthKey = @"Theft4RumbleStrength";
+// Format > Illumination: light-bar brightness for Dim, Bright and Brightest.
+static NSArray<NSNumber *> *kIlluminationLevels(void) { return @[@30, @65, @100]; }
 
 static NSString *Theft4PerformanceProfileFields(void) {
     NSProcessInfo *process = NSProcessInfo.processInfo;
@@ -490,7 +499,6 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     BOOL _loading;
     UIButton *_prepare;
     UIButton *_start;
-    UIButton *_ballad;
     Theft4ModMenu *_modMenu;
     BOOL _executionAttempted;
     Theft4MetalView *_metalView;
@@ -585,9 +593,12 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)prepareTransferredGame;
 - (void)startTransferredGame;
 - (void)enterLibertyCity;
-- (void)startTheBallad;
 - (NSString *)tbogtUnavailableReason;
 - (BOOL)isInGame;
+- (NSInteger)controllerLightBrightness;
+- (void)setControllerLightBrightness:(NSInteger)brightness;
+- (NSInteger)rumbleStrength;
+- (void)setRumbleStrength:(NSInteger)strength;
 - (void)showRecordingsInFiles;
 - (void)confirmReturnToStartMenu;
 - (void)exportLogCaptureSharing:(BOOL)share;
@@ -816,9 +827,7 @@ static void bootEvent(void *context, const char *event) {
     ]];
     _status = _bringupOverlay.statusLabel; _detail = _bringupOverlay.detailLabel;
     _start = _bringupOverlay.startButton; _prepare = _bringupOverlay.prepareButton;
-    _ballad = _bringupOverlay.balladButton;
     [_start addTarget:self action:@selector(enterLibertyCity) forControlEvents:UIControlEventTouchUpInside];
-    [_ballad addTarget:self action:@selector(startTheBallad) forControlEvents:UIControlEventTouchUpInside];
     [_prepare addTarget:self action:@selector(prepareTransferredGame) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.restartButton addTarget:self action:@selector(restartCore) forControlEvents:UIControlEventTouchUpInside];
     [_bringupOverlay.lowPowerButton addTarget:self action:@selector(applyLowPowerPreset)
@@ -827,7 +836,6 @@ static void bootEvent(void *context, const char *event) {
         forControlEvents:UIControlEventTouchUpInside];
 #ifndef THEFT4_HAS_GAME_STARTUP
     _start.hidden = YES;
-    _ballad.hidden = YES;
 #endif
     _showCPUUsage = _bringupOverlay.showCPUUsage;
     _showFrameTime = _bringupOverlay.showFrameTime;
@@ -860,14 +868,6 @@ static void bootEvent(void *context, const char *event) {
         toggle.enabled = NO;
 #endif
     }];
-    _bringupOverlay.handlingPreset.selectedSegmentIndex =
-        MAX(0, MIN(2, [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
-    [_bringupOverlay.handlingPreset addTarget:self action:@selector(handlingPresetChanged:)
-        forControlEvents:UIControlEventValueChanged];
-#ifndef THEFT4_HAS_GAME_STARTUP
-    _bringupOverlay.handlingPreset.selectedSegmentIndex = 0;
-    _bringupOverlay.handlingPreset.enabled = NO;
-#endif
 #ifndef THEFT4_HAS_GTA4_NATIVE_BACKEND
     _bringupOverlay.godMode.on = NO;
     _bringupOverlay.unlimitedAmmo.on = NO;
@@ -1971,10 +1971,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (_executionAttempted) [Theft4ModMenu applyPersistedSettings];
 }
 
-- (void)handlingPresetChanged:(UISegmentedControl *)sender {
-    [NSUserDefaults.standardUserDefaults setInteger:sender.selectedSegmentIndex forKey:@"Theft4ModHandling"];
-}
-
 - (void)customTimeCycleChanged:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4ModCustomTimeCycle"];
 }
@@ -2077,12 +2073,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)loadControllerLight {
     if (!_bringupOverlay.lightRed) return;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSArray<UISlider *> *sliders = @[_bringupOverlay.lightRed, _bringupOverlay.lightGreen, _bringupOverlay.lightBlue];
-    NSArray<NSString *> *keys = @[@"Theft4LightRed", @"Theft4LightGreen", @"Theft4LightBlue"];
-    const NSInteger fallback[] = {0, 0, 255};
+    NSArray<UISlider *> *sliders = @[_bringupOverlay.lightRed, _bringupOverlay.lightGreen,
+        _bringupOverlay.lightBlue, _bringupOverlay.lightBrightness];
+    NSArray<NSString *> *keys = @[@"Theft4LightRed", @"Theft4LightGreen", @"Theft4LightBlue",
+        kLightBrightnessKey];
+    const NSInteger fallback[] = {0, 0, 255, 100};
     for (NSUInteger i = 0; i < sliders.count; ++i) {
         id stored = [defaults objectForKey:keys[i]];
-        sliders[i].value = stored ? MAX(0, MIN(255, [stored integerValue])) : fallback[i];
+        sliders[i].value = stored ? MAX(0, MIN((NSInteger)sliders[i].maximumValue, [stored integerValue]))
+                                  : fallback[i];
         [sliders[i] addTarget:self action:@selector(controllerLightChanged:)
             forControlEvents:UIControlEventValueChanged];
     }
@@ -2090,6 +2089,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(controllerConnectedForLight:)
         name:GCControllerDidConnectNotification object:nil];
     [self publishControllerLight];
+    [self applyRumbleStrength];
     [_bringupOverlay.testVibrationButton addTarget:self action:@selector(testControllerVibration)
         forControlEvents:UIControlEventTouchUpInside];
 }
@@ -2136,23 +2136,62 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [defaults setInteger:(NSInteger)_bringupOverlay.lightRed.value forKey:@"Theft4LightRed"];
     [defaults setInteger:(NSInteger)_bringupOverlay.lightGreen.value forKey:@"Theft4LightGreen"];
     [defaults setInteger:(NSInteger)_bringupOverlay.lightBlue.value forKey:@"Theft4LightBlue"];
+    [defaults setInteger:(NSInteger)_bringupOverlay.lightBrightness.value forKey:kLightBrightnessKey];
     if (!_executionAttempted) [self publishControllerLight];
     [self showControllerLight];
 }
 
+// The light-bar color with the brightness applied, 0-255 per channel.
+- (void)controllerLightRed:(long *)red green:(long *)green blue:(long *)blue {
+    const float brightness = roundf(_bringupOverlay.lightBrightness.value) / 100.0f;
+    *red = lroundf(roundf(_bringupOverlay.lightRed.value) * brightness);
+    *green = lroundf(roundf(_bringupOverlay.lightGreen.value) * brightness);
+    *blue = lroundf(roundf(_bringupOverlay.lightBlue.value) * brightness);
+}
+
 - (void)publishControllerLight {
-    NSString *value = [NSString stringWithFormat:@"%ld,%ld,%ld",
-        lroundf(_bringupOverlay.lightRed.value), lroundf(_bringupOverlay.lightGreen.value),
-        lroundf(_bringupOverlay.lightBlue.value)];
+    long red, green, blue;
+    [self controllerLightRed:&red green:&green blue:&blue];
+    NSString *value = [NSString stringWithFormat:@"%ld,%ld,%ld", red, green, blue];
     setenv("THEFT4_CONTROLLER_LIGHT", value.UTF8String, 1);
     [self showControllerLight];
 }
 
 - (void)showControllerLight {
-    GCColor *color = [[GCColor alloc] initWithRed:roundf(_bringupOverlay.lightRed.value) / 255.0f
-        green:roundf(_bringupOverlay.lightGreen.value) / 255.0f
-        blue:roundf(_bringupOverlay.lightBlue.value) / 255.0f];
+    long red, green, blue;
+    [self controllerLightRed:&red green:&green blue:&blue];
+    GCColor *color = [[GCColor alloc] initWithRed:red / 255.0f green:green / 255.0f blue:blue / 255.0f];
     for (GCController *controller in GCController.controllers) controller.light.color = color;
+}
+
+// Format > Illumination in the menu bar. The setting is the same as the
+// Interface page's brightness slider, so it works in game as well.
+- (NSInteger)controllerLightBrightness {
+    return lroundf(_bringupOverlay.lightBrightness.value);
+}
+
+- (void)setControllerLightBrightness:(NSInteger)brightness {
+    _bringupOverlay.lightBrightness.value = MAX(0, MIN(100, brightness));
+    [_bringupOverlay refreshConfigurationSummary];
+    [self controllerLightChanged:_bringupOverlay.lightBrightness];
+}
+
+// Format > Rumble in the menu bar: 25-100% of the controller's rumble.
+- (NSInteger)rumbleStrength {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    const NSInteger stored = [defaults objectForKey:kRumbleStrengthKey] ? [defaults integerForKey:kRumbleStrengthKey] : 100;
+    return MAX(25, MIN(100, stored));
+}
+
+- (void)setRumbleStrength:(NSInteger)strength {
+    [NSUserDefaults.standardUserDefaults setInteger:MAX(25, MIN(100, strength)) forKey:kRumbleStrengthKey];
+    [self applyRumbleStrength];
+}
+
+- (void)applyRumbleStrength {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    rex_ios_input_set_rumble_strength(self.rumbleStrength / 100.0f);
+#endif
 }
 
 - (void)controllerConnectedForLight:(NSNotification *)note {
@@ -2788,7 +2827,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (!_launcherDuringGame) return;
     _launcherDuringGame = NO;
     _start.enabled = NO;
-    _ballad.enabled = NO;
     _bringupOverlay.userInteractionEnabled = NO;
     _bringupOverlay.hidden = YES;
     _bringupOverlay.alpha = 0.0;
@@ -3299,21 +3337,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self startGamePreparation:game execute:NO];
 }
 
-// Enter Liberty City always opens GTA IV's normal title; Start the Ballad
-// opens the game's own TBoGT start screen. The choice reaches the runtime as
-// THEFT4_START_EPISODE and survives a texture-preparation detour.
+// Search for Liberty opens GTA IV's normal title; The Ballad of Gay Tony is
+// chosen from the game's own menus. THEFT4_START_EPISODE reaches the runtime
+// and survives a texture-preparation detour.
 - (void)enterLibertyCity {
     setenv("THEFT4_START_EPISODE", "base", 1);
     [self record:@"ui.start_episode_base"];
     [self startTransferredGame];
-}
-
-- (void)startTheBallad {
-    if (![self tbogtUnavailableReason]) {
-        setenv("THEFT4_START_EPISODE", "tbogt", 1);
-        [self record:@"ui.start_episode_tbogt"];
-        [self startTransferredGame];
-    }
 }
 
 // nil when The Ballad of Gay Tony can start; otherwise a short reason.
@@ -3371,9 +3401,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)refreshEpisodeAvailability {
-    NSString *reason = [self tbogtUnavailableReason];
-    _ballad.enabled = _start.enabled && !reason;
-    [_bringupOverlay setEpisodeStatus:reason ?: @"The Ballad of Gay Tony is installed. Start the Ballad opens its start screen."];
+    [_bringupOverlay setEpisodeStatus:[self tbogtUnavailableReason] ?: @"All game files installed."];
 }
 
 - (void)startTransferredGame {
@@ -3430,19 +3458,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (timeCycle) setenv("THEFT4_MOD_TIMECYCLE_DIRECTORY",
             timeCycle.stringByDeletingLastPathComponent.fileSystemRepresentation, 1);
         else unsetenv("THEFT4_MOD_TIMECYCLE_DIRECTORY");
-        // Vehicle handling preset (saved by the launcher or the mod menu).
-        const NSInteger handling = MAX(0, MIN(2,
-            [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
-        NSString *handlingBase = handling ? [NSBundle.mainBundle pathForResource:@"handling-base"
-            ofType:@"dat" inDirectory:@"Mods/RealisticHandling"] : nil;
-        if (handlingBase) {
-            setenv("THEFT4_MOD_HANDLING", handling == 2 ? "2" : "1", 1);
-            setenv("THEFT4_MOD_HANDLING_DIRECTORY",
-                handlingBase.stringByDeletingLastPathComponent.fileSystemRepresentation, 1);
-        } else {
-            unsetenv("THEFT4_MOD_HANDLING");
-            unsetenv("THEFT4_MOD_HANDLING_DIRECTORY");
-        }
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
         NSString *preparationRoot = [_supportURL.path
             stringByAppendingPathComponent:@"texture-preparation"];
@@ -3542,7 +3557,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _loading = YES;
     _prepare.enabled = NO;
     _start.enabled = NO;
-    _ballad.enabled = NO;
     // Mod switches saved from the launcher or an earlier in-game session.
     if (execute) {
         [Theft4ModMenu applyPersistedSettings];
@@ -3753,6 +3767,46 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         action:@selector(returnToStartMenu:) propertyList:nil];
     [builder insertChildMenu:[UIMenu menuWithTitle:@"" image:nil identifier:@"com.theft4.capture"
         options:UIMenuOptionsDisplayInline children:@[capture, show, quit]] atEndOfMenuForIdentifier:UIMenuFile];
+
+    // Format: Illumination (light-bar brightness) in place of Font, and
+    // Rumble (strength) in place of Text. Turning rumble off is the game's
+    // own vibration setting.
+    NSMutableArray<UICommand *> *illumination = [NSMutableArray new];
+    NSArray<NSString *> *levels = @[@"Dim", @"Bright", @"Brightest"];
+    for (NSUInteger i = 0; i < levels.count; ++i)
+        [illumination addObject:[UICommand commandWithTitle:levels[i] image:nil
+            action:@selector(setIlluminationCommand:) propertyList:kIlluminationLevels()[i]]];
+    UIMenu *illuminationMenu = [UIMenu menuWithTitle:@"Illumination" image:nil
+        identifier:@"com.theft4.illumination" options:0 children:illumination];
+    NSMutableArray<UICommand *> *rumble = [NSMutableArray new];
+    for (NSNumber *percent in @[@25, @50, @75, @100])
+        [rumble addObject:[UICommand commandWithTitle:[NSString stringWithFormat:@"%@%%", percent] image:nil
+            action:@selector(setRumbleCommand:) propertyList:percent]];
+    UIMenu *rumbleMenu = [UIMenu menuWithTitle:@"Rumble" image:nil
+        identifier:@"com.theft4.rumble" options:0 children:rumble];
+    for (NSArray *swap in @[@[UIMenuFont, illuminationMenu], @[UIMenuText, rumbleMenu]]) {
+        if ([builder menuForIdentifier:swap[0]])
+            [builder replaceMenuForIdentifier:swap[0] withMenu:swap[1]];
+        else if ([builder menuForIdentifier:UIMenuFormat])
+            [builder insertChildMenu:swap[1] atEndOfMenuForIdentifier:UIMenuFormat];
+    }
+}
+
+- (Theft4ViewController *)launcherController {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        id delegate = scene.delegate;
+        if ([delegate isKindOfClass:Theft4SceneDelegate.class])
+            return ((Theft4SceneDelegate *)delegate).controller;
+    }
+    return nil;
+}
+
+- (void)setIlluminationCommand:(UICommand *)command {
+    [[self launcherController] setControllerLightBrightness:[command.propertyList integerValue]];
+}
+
+- (void)setRumbleCommand:(UICommand *)command {
+    [[self launcherController] setRumbleStrength:[command.propertyList integerValue]];
 }
 
 - (void)showRecordingsInFiles:(__unused UICommand *)command {
@@ -3780,6 +3834,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)validateCommand:(UICommand *)command {
     [super validateCommand:command];
     Theft4ViewController *controller = [self activeGameController];
+    if (command.action == @selector(setIlluminationCommand:) || command.action == @selector(setRumbleCommand:)) {
+        Theft4ViewController *settings = [self launcherController];
+        const NSInteger current = command.action == @selector(setRumbleCommand:)
+            ? settings.rumbleStrength : settings.controllerLightBrightness;
+        command.attributes = settings ? 0 : UIMenuElementAttributesDisabled;
+        command.state = settings && current == [command.propertyList integerValue] ? UIMenuElementStateOn
+                                                                                   : UIMenuElementStateOff;
+        return;
+    }
     if (command.action == @selector(showRecordingsInFiles:)) {
         command.attributes = controller ? 0 : UIMenuElementAttributesDisabled;
         return;

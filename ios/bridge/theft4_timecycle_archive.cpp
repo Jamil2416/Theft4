@@ -1,7 +1,6 @@
 #include "theft4_timecycle_archive.h"
 #include "theft4_timecycle_mod.h"
 #include <xxhash.h>
-#include <zlib.h>
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -193,35 +192,6 @@ std::filesystem::path PrepareArchiveReplacement(const std::filesystem::path& sou
         std::error_code ignored; std::filesystem::remove(temporary,ignored); throw;
     }
     return output;
-}
-
-std::vector<uint8_t> ReadArchiveEntry(const std::filesystem::path& source,
-    const std::filesystem::path& key_path, std::string_view entry_path, const std::string& label) {
-    auto a=OpenArchive(source,key_path,label);
-    const size_t entry=ArchiveEntry(a.toc,a.count,a.size,entry_path,label);
-    const uint32_t original_size=Get(a.toc,entry+4), offset=Get(a.toc,entry+8), flags=Get(a.toc,entry+12);
-    const uint32_t stored=flags&0x3fffffff;
-    if(original_size>64*1024*1024 || stored>64*1024*1024)
-        throw std::runtime_error(label+": archive entry is too large.");
-    auto data=Read(source,offset,stored);
-    if(!(flags&0x40000000)) {
-        data.resize(std::min<size_t>(data.size(),original_size));
-        return data;
-    }
-    // Compressed entries: a zlib stream, or raw deflate.
-    for(const int bits : {15+32,-15}) {
-        Bytes out(original_size);
-        z_stream z{};
-        if(inflateInit2(&z,bits)!=Z_OK) continue;
-        z.next_in=data.data(); z.avail_in=uInt(data.size());
-        z.next_out=out.data(); z.avail_out=uInt(out.size());
-        const int result=inflate(&z,Z_FINISH);
-        const auto produced=z.total_out;
-        inflateEnd(&z);
-        if((result==Z_STREAM_END || result==Z_BUF_ERROR) && produced==original_size)
-            return out;
-    }
-    throw std::runtime_error(label+": could not decompress "+std::string(entry_path)+".");
 }
 
 std::filesystem::path PrepareTimeCycleArchive(const std::filesystem::path& game,

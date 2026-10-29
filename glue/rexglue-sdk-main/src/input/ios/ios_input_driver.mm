@@ -49,6 +49,12 @@ static std::atomic<uint32_t> g_rumble_max_right{0};
 static std::atomic<uint64_t> g_rumble_unrouted{0};
 static std::atomic<uint64_t> g_rumble_player_starts{0};
 static std::atomic<uint64_t> g_rumble_engine_resets{0};
+// Rumble strength chosen in the app (Format > Rumble), 0...1.
+static std::atomic<float> g_rumble_strength{1.0f};
+
+extern "C" void rex_ios_input_set_rumble_strength(float strength) {
+  g_rumble_strength.store(std::clamp(strength, 0.0f, 1.0f), std::memory_order_relaxed);
+}
 
 static dispatch_queue_t RumbleDiagnosticsQueue() {
   static dispatch_queue_t queue;
@@ -343,8 +349,10 @@ API_AVAILABLE(ios(14.0), tvos(14.0))
     const uint32_t value = bridge->_pending.load(std::memory_order_acquire);
     const float l = float(value >> 16) / 65535.0f;
     const float r = float(value & 0xFFFFu) / 65535.0f;
-    // The heavy left motor leads; the light right motor adds a little.
-    [bridge->_rumble applyIntensity:std::min(1.0f, std::max(l, r) * 0.7f + std::min(l, r) * 0.3f)];
+    // The heavy left motor leads; the light right motor adds a little. The
+    // player's rumble strength scales the result.
+    const float mixed = std::min(1.0f, std::max(l, r) * 0.7f + std::min(l, r) * 0.3f);
+    [bridge->_rumble applyIntensity:mixed * g_rumble_strength.load(std::memory_order_relaxed)];
   });
 }
 

@@ -295,25 +295,6 @@ static NSString *DefaultsKeyFor(NSInteger setting) {
     return item;
 }
 
-// The handling preset is read when the game starts; the row saves the choice
-// for the next start (the launcher's Mods page shows the same setting).
-- (Theft4ModItem *)handlingItem {
-    NSArray<NSString *> *names = @[@"Original", @"Realistic", @"Jelly"];
-    Theft4ModItem *item = [Theft4ModItem new];
-    item.title = @"Handling (next start)";
-    item.help = @"Realistic Handling & Physics by Shturmovik2, or Jelly. Save, then reopen the game";
-    item.kind = Theft4ModItemValue;
-    item.minimum = 0; item.maximum = 2; item.step = 1; item.wraps = YES;
-    item.getValue = ^NSInteger {
-        return MAX(0, MIN(2, [NSUserDefaults.standardUserDefaults integerForKey:@"Theft4ModHandling"]));
-    };
-    item.setValue = ^(NSInteger value) {
-        [NSUserDefaults.standardUserDefaults setInteger:value forKey:@"Theft4ModHandling"];
-    };
-    item.format = ^NSString *(NSInteger v) { return names[MAX(0, MIN(2, v))]; };
-    return item;
-}
-
 - (Theft4ModItem *)roadsPreset:(NSString *)title help:(NSString *)help traffic:(int)traffic peds:(int)peds {
     return [Theft4ModItem action:title help:help run:^{
         TRAINER_SET(THEFT4_TRAINER_TRAFFIC_DENSITY, traffic);
@@ -451,7 +432,6 @@ static NSArray<NSArray<NSString *> *> *VehicleGroups(void) {
         [self trainerAction:@"Boost Up" help:@"Launch the vehicle upward" action:THEFT4_TRAINER_BOOST_UP],
         [self trainerValue:@"Boost Strength" help:@"For Boost Forward and Boost Up"
             setting:THEFT4_TRAINER_BOOST_STRENGTH minimum:1 maximum:10 step:1 format:plain],
-        [self handlingItem],
         [self trainerAction:@"Fix Vehicle" help:nil action:THEFT4_TRAINER_FIX_VEHICLE],
         [self trainerToggle:@"Auto-Repair" help:@"Repair damage as it happens"
             setting:THEFT4_TRAINER_AUTO_REPAIR],

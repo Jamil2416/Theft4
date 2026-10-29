@@ -23,6 +23,11 @@ static UIColor *Ink(unsigned rgb) {
                             blue:(rgb & 255) / 255.0 alpha:1];
 }
 
+// The Ballad of Gay Tony's neon, left to right as on its logo and pause
+// menu: yellow, orange, pink, purple, blue.
+static const unsigned kNeon[] = {0xF5C82E, 0xE8873A, 0xE0157A, 0x9B4FB5, 0x4AA8DC};
+static const unsigned kNeonPink = 0xE0157A;
+
 static UILabel *Copy(NSString *text, CGFloat size, BOOL mono) {
     UILabel *label = [UILabel new];
     label.text = text;
@@ -32,7 +37,7 @@ static UILabel *Copy(NSString *text, CGFloat size, BOOL mono) {
         : [UIFont systemFontOfSize:size weight:UIFontWeightRegular];
     label.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody] scaledFontForFont:font];
     label.adjustsFontForContentSizeCategory = YES;
-    label.textColor = Ink(0xABB7B5);
+    label.textColor = Ink(0xB5ADBC);
     return label;
 }
 
@@ -60,8 +65,8 @@ static UIButton *Action(NSString *title, BOOL primary) {
     config.title = title;
     config.cornerStyle = UIButtonConfigurationCornerStyleFixed;
     config.background.cornerRadius = 3;
-    config.baseForegroundColor = primary ? Ink(0x111B1D) : Ink(0xE5DECA);
-    config.background.backgroundColor = primary ? Ink(0xE6B56B) : Ink(0x243236);
+    config.baseForegroundColor = primary ? UIColor.whiteColor : Ink(0xEEE6F2);
+    config.background.backgroundColor = primary ? Ink(kNeonPink) : Ink(0x2A1D30);
     config.contentInsets = NSDirectionalEdgeInsetsMake(17, 18, 17, 18);
     config.image = [UIImage systemImageNamed:primary ? @"play.fill" : @"arrow.right"];
     config.imagePlacement = NSDirectionalRectEdgeTrailing;
@@ -72,11 +77,32 @@ static UIButton *Action(NSString *title, BOOL primary) {
     return button;
 }
 
+// A thin rule shaded through the neon colours, like the TBoGT menu lines.
+@interface Theft4NeonRule : UIView
+- (instancetype)initVertical:(BOOL)vertical;
+@end
+
+@implementation Theft4NeonRule
++ (Class)layerClass { return CAGradientLayer.class; }
+- (instancetype)initVertical:(BOOL)vertical {
+    if (!(self = [super initWithFrame:CGRectZero])) return nil;
+    CAGradientLayer *gradient = (CAGradientLayer *)self.layer;
+    NSMutableArray *colors = [NSMutableArray new];
+    for (size_t i = 0; i < sizeof(kNeon) / sizeof(kNeon[0]); ++i)
+        [colors addObject:(id)[Ink(kNeon[i]) colorWithAlphaComponent:.85].CGColor];
+    gradient.colors = colors;
+    gradient.startPoint = vertical ? CGPointMake(.5, 0) : CGPointMake(0, .5);
+    gradient.endPoint = vertical ? CGPointMake(.5, 1) : CGPointMake(1, .5);
+    self.userInteractionEnabled = NO;
+    return self;
+}
+@end
+
 static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *identifier,
                                          NSString *label, NSString *hint) {
     UISegmentedControl *control = [[UISegmentedControl alloc] initWithItems:items];
-    control.selectedSegmentTintColor = Ink(0xC99755);
-    control.backgroundColor = Ink(0x172326);
+    control.selectedSegmentTintColor = Ink(kNeonPink);
+    control.backgroundColor = Ink(0x1C1224);
     const BOOL phone = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     if (phone) {
         for (NSUInteger i = 0; i < control.numberOfSegments; ++i) {
@@ -87,8 +113,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     NSDictionary *font = phone ? @{NSFontAttributeName:
         [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1] scaledFontForFont:
             [UIFont systemFontOfSize:11 weight:UIFontWeightMedium]]} : @{};
-    NSMutableDictionary *normal = [font mutableCopy]; normal[NSForegroundColorAttributeName] = Ink(0xD9D5C7);
-    NSMutableDictionary *selected = [font mutableCopy]; selected[NSForegroundColorAttributeName] = Ink(0x10191B);
+    NSMutableDictionary *normal = [font mutableCopy]; normal[NSForegroundColorAttributeName] = Ink(0xDCD3E0);
+    NSMutableDictionary *selected = [font mutableCopy]; selected[NSForegroundColorAttributeName] = UIColor.whiteColor;
     [control setTitleTextAttributes:normal
                            forState:UIControlStateNormal];
     [control setTitleTextAttributes:selected
@@ -125,7 +151,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
-    self.backgroundColor = Ink(0x081115);
+    self.backgroundColor = Ink(0x07040A);
 
     _city = [Theft4CityView new];
     [self addSubview:_city];
@@ -134,10 +160,10 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _atmosphere.userInteractionEnabled = NO;
     [self addSubview:_atmosphere];
     _shade = [CAGradientLayer layer];
-    _shade.colors = @[(id)Ink(0x081115).CGColor,
-                      (id)[Ink(0x081115) colorWithAlphaComponent:.94].CGColor,
-                      (id)[Ink(0x081115) colorWithAlphaComponent:.18].CGColor,
-                      (id)[Ink(0x081115) colorWithAlphaComponent:.02].CGColor];
+    _shade.colors = @[(id)Ink(0x07040A).CGColor,
+                      (id)[Ink(0x07040A) colorWithAlphaComponent:.94].CGColor,
+                      (id)[Ink(0x07040A) colorWithAlphaComponent:.18].CGColor,
+                      (id)[Ink(0x07040A) colorWithAlphaComponent:.02].CGColor];
     _shade.locations = @[@0, @.28, @.68, @1];
     _shade.startPoint = CGPointMake(0, .5);
     _shade.endPoint = CGPointMake(1, .5);
@@ -158,14 +184,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     rain.emissionLongitude = M_PI_2 + .12;
     rain.scale = .7;
     rain.scaleRange = .4;
-    rain.color = [Ink(0x99BABC) colorWithAlphaComponent:.12].CGColor;
+    rain.color = [Ink(0xC08AD8) colorWithAlphaComponent:.12].CGColor;
     _rain = [CAEmitterLayer layer];
     _rain.emitterShape = kCAEmitterLayerLine;
     _rain.emitterCells = @[rain];
     [_atmosphere.layer addSublayer:_rain];
 
     _masthead = Copy(@"T H E F T 4   /   LIBERTY CITY", 11, YES);
-    _masthead.textColor = Ink(0xE5DECA);
+    _masthead.textColor = Ink(0xEEE6F2);
     [self addSubview:_masthead];
     BOOL lab = [NSBundle.mainBundle.infoDictionary[@"Theft4LabBuild"] boolValue];
     NSString *version = NSBundle.mainBundle.infoDictionary[@"Theft4ReleaseName"] ?: @"0.3";
@@ -173,16 +199,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _edition = Copy([NSString stringWithFormat:@"AFTER HOURS   /   v%@ (%@)", version, build], 11, YES);
     _edition.textAlignment = NSTextAlignmentRight;
     [self addSubview:_edition];
-    _topRule = [UIView new];
-    _bottomRule = [UIView new];
-    _topRule.backgroundColor = _bottomRule.backgroundColor =
-        [Ink(0xB7BBA8) colorWithAlphaComponent:.22];
+    _topRule = [[Theft4NeonRule alloc] initVertical:NO];
+    _bottomRule = [[Theft4NeonRule alloc] initVertical:NO];
     [self addSubview:_topRule];
     [self addSubview:_bottomRule];
 
     _menuPanel = [UIView new];
-    _menuPanel.backgroundColor = [Ink(0x091316) colorWithAlphaComponent:.88];
-    _menuPanel.layer.borderColor = [Ink(0xABB7B5) colorWithAlphaComponent:.15].CGColor;
+    _menuPanel.backgroundColor = [Ink(0x0A060D) colorWithAlphaComponent:.88];
+    _menuPanel.layer.borderColor = [Ink(0xB5ADBC) colorWithAlphaComponent:.15].CGColor;
     _menuPanel.layer.borderWidth = 1;
     _menuPanel.layer.cornerRadius = 4;
     [self addSubview:_menuPanel];
@@ -193,7 +217,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _wordmark.adjustsFontSizeToFitWidth = YES;
     _wordmark.minimumScaleFactor = .75;
     _wordmark.numberOfLines = 1;
-    _wordmark.textColor = Ink(0xECE7D7);
+    _wordmark.textColor = UIColor.whiteColor;
+    // White letters lit by a pink neon edge, like the TBoGT logo.
+    _wordmark.layer.shadowColor = Ink(kNeonPink).CGColor;
+    _wordmark.layer.shadowOffset = CGSizeZero;
+    _wordmark.layer.shadowRadius = 9;
+    _wordmark.layer.shadowOpacity = .9;
     _wordmark.accessibilityLabel = @"Theft four";
     [_menuPanel addSubview:_wordmark];
 
@@ -228,12 +257,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _navigationScroll.showsVerticalScrollIndicator = NO;
     [_navigationScroll addSubview:_navigation];
     [_menuPanel addSubview:_navigationScroll];
-    _navRule = [UIView new];
-    _navRule.backgroundColor = [Ink(0xABB7B5) colorWithAlphaComponent:.14];
+    _navRule = [[Theft4NeonRule alloc] initVertical:YES];
+    _navRule.alpha = .55;
     [_menuPanel addSubview:_navRule];
 
     _pageTitle = Copy(@"PLAY", 12, YES);
-    _pageTitle.textColor = Ink(0xE6B56B);
+    _pageTitle.textColor = Ink(0xF5C82E);
     _pageDetail = Copy(@"CONTINUE INTO LIBERTY CITY", 10, YES);
     [_menuPanel addSubview:_pageTitle];
     [_menuPanel addSubview:_pageDetail];
@@ -241,36 +270,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _playHeadline = Copy(@"One more night\nin Liberty City.", 31, NO);
     _playHeadline.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
         [UIFont systemFontOfSize:31 weight:UIFontWeightSemibold]];
-    _playHeadline.textColor = Ink(0xECE7D7);
+    _playHeadline.textColor = Ink(0xF4EEF7);
     _playIntro = Copy(@"Cross the river. Take the long way home.\nYour next story starts on these streets.", 15, NO);
-    _startButton = Action(@"ENTER LIBERTY CITY", YES);
+    _startButton = Action(@"SEARCH FOR LIBERTY", YES);
     _startButton.accessibilityIdentifier = @"game.start";
-    _balladButton = Action(@"START THE BALLAD", YES);
-    {
-        // The Ballad of Gay Tony's menu pink, with white text.
-        UIButtonConfiguration *config = _balladButton.configuration;
-        config.background.backgroundColor = Ink(0xD91A6D);
-        config.baseForegroundColor = UIColor.whiteColor;
-        _balladButton.configuration = config;
-    }
-    _balladButton.accessibilityIdentifier = @"game.start.tbogt";
-    _balladButton.accessibilityLabel = @"Start The Ballad of Gay Tony";
-    _balladButton.enabled = NO;
-    // The custom background keeps its color when disabled; dim the button
-    // so an unavailable episode reads as unavailable.
-    _balladButton.configurationUpdateHandler = ^(UIButton *button) {
-        button.alpha = button.enabled ? 1.0 : 0.45;
-    };
-    // The two starts split the width the single start button used to take.
-    UIStackView *startRow = [[UIStackView alloc] initWithArrangedSubviews:@[_startButton, _balladButton]];
-    startRow.axis = UILayoutConstraintAxisHorizontal;
-    startRow.distribution = UIStackViewDistributionFillEqually;
-    startRow.alignment = UIStackViewAlignmentFill;
-    startRow.spacing = 12;
     _episodeStatus = Copy(@"", 12, NO);
     _episodeStatus.hidden = YES;
     _playSaveNote = Copy(@"Continue or begin a new story inside the game. Your saves stay with this app.", 12, NO);
-    _play = Column(@[_playHeadline, _playIntro, startRow, _episodeStatus, _playSaveNote], 22);
+    _play = Column(@[_playHeadline, _playIntro, _startButton, _episodeStatus, _playSaveNote], 22);
 
     _showCPUUsage = [UISwitch new];
     _showFrameTime = [UISwitch new];
@@ -287,7 +294,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         @"anisotropicFiltering", @"enhancedOutput1080p", @"fsrBoost", @"motionBlur",
         @"depthOfField"];
     for (NSUInteger i = 0; i < switches.count; ++i) {
-        switches[i].onTintColor = Ink(0xB6884D);
+        switches[i].onTintColor = Ink(0xE8873A);
         switches[i].accessibilityIdentifier = [@"settings." stringByAppendingString:identifiers[i]];
     }
 
@@ -296,7 +303,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _sharpening = [UISlider new];
     _sharpening.minimumValue = 0;
     _sharpening.maximumValue = 100;
-    _sharpening.minimumTrackTintColor = Ink(0x35CDD1);
+    _sharpening.minimumTrackTintColor = Ink(0xE0157A);
     _sharpening.accessibilityIdentifier = @"settings.sharpening";
     _sharpening.accessibilityLabel = @"Sharpening strength";
     _sharpening.accessibilityHint = @"Zero disables sharpening. Changes apply on the next game launch.";
@@ -310,7 +317,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             @"Render resolution", @"The internal scene resolution. Applies at the next game launch.");
         _renderResolution.selectedSegmentIndex = 1;
         _fsrUpscaling = [UISwitch new];
-        _fsrUpscaling.onTintColor = Ink(0xB6884D);
+        _fsrUpscaling.onTintColor = Ink(0xE8873A);
         _fsrUpscaling.accessibilityIdentifier = @"settings.fsrUpscaling";
         _resolutionSummary = Copy(@"", 12, YES);
         _resolutionSummary.accessibilityIdentifier = @"settings.resolutionSummary";
@@ -379,7 +386,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _aaMetrics = Copy(@"", 12, YES);
     for (UILabel *metric in @[_shadowMetrics, _distanceMetrics, _modelMetrics,
                               _reflectionMetrics, _aaMetrics]) {
-        metric.textColor = Ink(0xE6B56B);
+        metric.textColor = Ink(0xF5C82E);
     }
     for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
                                          _reflectionQuality, _antiAliasing]) {
@@ -425,14 +432,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _restartButton.accessibilityIdentifier = @"core.restart";
 #ifdef THEFT4_BC_TEXTURE_COMPATIBILITY
     _astcConversion = [UISwitch new];
-    _astcConversion.onTintColor = Ink(0x35CDD1);
+    _astcConversion.onTintColor = Ink(0xE0157A);
     _astcConversion.accessibilityIdentifier = @"settings.astcConversion";
 #endif
     _skipIntro = [UISwitch new];
-    _skipIntro.onTintColor = Ink(0x35CDD1);
+    _skipIntro.onTintColor = Ink(0xE0157A);
     _skipIntro.accessibilityIdentifier = @"settings.skipIntro";
     _performanceCapture = [UISwitch new];
-    _performanceCapture.onTintColor = Ink(0xB6884D);
+    _performanceCapture.onTintColor = Ink(0xE8873A);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
     _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE", NO);
     _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
@@ -460,15 +467,15 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     UIStackView *astcRow = (UIStackView *)[self setting:@"ASTC TEXTURE COMPATIBILITY"
         detail:@"Automatic one-time setup for this GPU. Saves compressed ASTC copies before Play to reduce texture-conversion pauses and GPU memory use. Later launches reuse them. Devices with direct BC support, such as iPhone 15 Pro (A17 Pro), iPhone 16 (A18), and M3/M4/M5 iPads, skip this requirement."
         toggle:_astcConversion];
-    astcRow.backgroundColor = [Ink(0x35CDD1) colorWithAlphaComponent:.12];
-    astcRow.layer.borderColor = [Ink(0x35CDD1) colorWithAlphaComponent:.60].CGColor;
+    astcRow.backgroundColor = [Ink(0xE0157A) colorWithAlphaComponent:.12];
+    astcRow.layer.borderColor = [Ink(0xE0157A) colorWithAlphaComponent:.60].CGColor;
     astcRow.layer.borderWidth = 1;
     astcRow.layer.cornerRadius = 8;
     astcRow.layoutMargins = UIEdgeInsetsMake(13, 13, 13, 13);
     astcRow.layoutMarginsRelativeArrangement = YES;
     UIStackView *astcText = (UIStackView *)astcRow.arrangedSubviews.firstObject;
     UILabel *astcTitle = (UILabel *)astcText.arrangedSubviews.firstObject;
-    astcTitle.textColor = Ink(0x6BE5E7);
+    astcTitle.textColor = Ink(0xFF5FA8);
     _deleteTextureCacheButton = Action(@"DELETE PREPARED TEXTURE CACHE", NO);
     _deleteTextureCacheButton.accessibilityIdentifier = @"settings.deleteTextureCache";
     BOOL showTextureCompatibility = Theft4DeviceNeedsBCTexturePreparation();
@@ -484,7 +491,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _system = Column(systemRows, 20);
 
     _customTimeCycle = [UISwitch new];
-    _customTimeCycle.onTintColor = Ink(0x35CDD1);
+    _customTimeCycle.onTintColor = Ink(0xE0157A);
     _customTimeCycle.accessibilityIdentifier = @"mods.customTimeCycle";
     NSString *previewPath = [NSBundle.mainBundle pathForResource:@"preview" ofType:@"jpg"
         inDirectory:@"Mods/CustomTimeCycle"];
@@ -508,15 +515,15 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         : @"Developer credit coming soon.", 13, NO);
     credit.accessibilityIdentifier = @"mods.customTimeCycle.developerCredit";
     _nativeAspect = [UISwitch new];
-    _nativeAspect.onTintColor = Ink(0x35CDD1);
+    _nativeAspect.onTintColor = Ink(0xE0157A);
     _nativeAspect.accessibilityIdentifier = @"mods.nativeAspect";
     [_nativeAspect addTarget:self action:@selector(refreshConfigurationSummary)
         forControlEvents:UIControlEventValueChanged];
     _godMode = [UISwitch new];
-    _godMode.onTintColor = Ink(0x35CDD1);
+    _godMode.onTintColor = Ink(0xE0157A);
     _godMode.accessibilityIdentifier = @"mods.godMode";
     _unlimitedAmmo = [UISwitch new];
-    _unlimitedAmmo.onTintColor = Ink(0x35CDD1);
+    _unlimitedAmmo.onTintColor = Ink(0xE0157A);
     _unlimitedAmmo.accessibilityIdentifier = @"mods.unlimitedAmmo";
     // Title, short detail and defaults key for each further trainer switch.
     NSArray<NSArray<NSString *> *> *trainer = @[
@@ -531,17 +538,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     NSMutableArray<UIView *> *trainerRows = [NSMutableArray new];
     for (NSArray<NSString *> *entry in trainer) {
         UISwitch *toggle = [UISwitch new];
-        toggle.onTintColor = Ink(0x35CDD1);
+        toggle.onTintColor = Ink(0xE0157A);
         toggle.accessibilityIdentifier = [@"mods." stringByAppendingString:entry[2]];
         trainerSwitches[entry[2]] = toggle;
         [trainerRows addObject:[self setting:entry[0] detail:entry[1] toggle:toggle]];
     }
     _trainerSwitches = trainerSwitches;
-    _handlingPreset = ChoiceControl(@[@"Original", @"Realistic", @"Jelly"], @"handlingPreset",
-        @"Vehicle handling", @"Applies when the game starts");
-    UIView *handlingRow = [self choice:@"VEHICLE HANDLING"
-        detail:@"Realistic: Realistic Handling & Physics by Shturmovik2, for the base game and both episodes. Jelly: soft, bouncy, light and top-heavy, so vehicles roll over easily. Applies when the game starts; your game files are not changed."
-        control:_handlingPreset];
     NSString *menuNote = @"In game, double-click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
         @"Click the touchpad's top or bottom to move, right to select, left to go back; double-click its centre to close. "
         @"It has these switches and more: vehicle spawner, no clip, free camera, teleport, weapons, money, time, weather, traffic and performance graphs. "
@@ -567,7 +569,6 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Keep reserve ammunition for weapons you own. Magazines still empty, and you still reload normally. This does not grant weapons."
             toggle:_unlimitedAmmo],
         Copy(@"Reserve ammo is replenished while enabled. Replenished ammo amounts can be included in your game save; turning the mod off restores normal ammo consumption.", 12, NO),
-        handlingRow,
         Column(trainerRows, 16),
         Copy(menuNote, 12, NO),
         Copy(@"Your original game files and saves are kept.", 12, NO)
@@ -605,7 +606,6 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             detail:@"Unlimited reserve ammo. Magazines still empty and reload normally. No weapons granted."
             toggle:_unlimitedAmmo]];
         [_mods addArrangedSubview:Copy(@"Replenished ammo can be saved. Turning the mod off restores normal consumption.", 12, NO)];
-        [_mods addArrangedSubview:handlingRow];
         for (UIView *row in trainerRows) [_mods addArrangedSubview:row];
         [_mods addArrangedSubview:Copy(menuNote, 12, NO)];
         NSMutableArray *pages = [NSMutableArray new];
@@ -617,10 +617,10 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
                     [items addObject:view]; continue;
                 }
                 UIView *card = [UIView new];
-                card.backgroundColor = [Ink(0x172326) colorWithAlphaComponent:.94];
+                card.backgroundColor = [Ink(0x1C1224) colorWithAlphaComponent:.94];
                 card.layer.cornerRadius = 12;
                 card.layer.borderWidth = 0.5;
-                card.layer.borderColor = [Ink(0xABB7B5) colorWithAlphaComponent:.16].CGColor;
+                card.layer.borderColor = [Ink(0xB5ADBC) colorWithAlphaComponent:.16].CGColor;
                 UIView *spacer = [UIView new];
                 [spacer.heightAnchor constraintGreaterThanOrEqualToConstant:0].active = YES;
                 UIStackView *body = Column(@[view, spacer], 0);
@@ -655,7 +655,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     ]];
 
     _controllerHint = Copy(@"D-PAD  NAVIGATE     A  SELECT", 10, YES);
-    _controllerHint.textColor = Ink(0xE5DECA);
+    _controllerHint.textColor = Ink(0xEEE6F2);
     [_menuPanel addSubview:_controllerHint];
     _statusLabel = Copy(@"Core ready", 12, YES);
     _statusLabel.accessibilityIdentifier = @"core.status";
@@ -677,7 +677,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
 - (UIView *)setting:(NSString *)title detail:(NSString *)detail toggle:(UISwitch *)toggle {
     UILabel *label = Copy(title, 14, YES);
-    label.textColor = Ink(0xECE7D7);
+    label.textColor = Ink(0xF4EEF7);
     UIStackView *text = Column(@[label, Copy(detail, 12, NO)], 5);
     UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[text, toggle]];
     row.alignment = UIStackViewAlignmentCenter;
@@ -691,14 +691,14 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 
 - (UIView *)choice:(NSString *)title detail:(NSString *)detail control:(UISegmentedControl *)control {
     UILabel *label = Copy(title, 14, YES);
-    label.textColor = Ink(0xECE7D7);
+    label.textColor = Ink(0xF4EEF7);
     return Column(@[label, control, Copy(detail, 12, NO)], 7);
 }
 
 - (UIView *)choice:(NSString *)title detail:(NSString *)detail
            control:(UISegmentedControl *)control metrics:(UILabel *)metrics {
     UILabel *label = Copy(title, 14, YES);
-    label.textColor = Ink(0xECE7D7);
+    label.textColor = Ink(0xF4EEF7);
     return Column(@[label, control, metrics, Copy(detail, 12, NO)], 7);
 }
 
@@ -707,11 +707,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         BOOL selected = !_pages[tab.tag].hidden;
         BOOL focused = tab.isFocused;
         UIButtonConfiguration *config = tab.configuration;
-        config.baseForegroundColor = selected || focused ? Ink(0xF0E4CC) : Ink(0x819091);
+        UIColor *neon = Ink(kNeon[tab.tag % (NSInteger)(sizeof(kNeon) / sizeof(kNeon[0]))]);
+        config.baseForegroundColor = selected || focused ? UIColor.whiteColor : neon;
         config.background.backgroundColor = focused
-            ? [Ink(0xE6B56B) colorWithAlphaComponent:.30]
-            : (selected ? [Ink(0xE6B56B) colorWithAlphaComponent:.13] : UIColor.clearColor);
-        config.background.strokeColor = focused ? Ink(0xE6B56B) : UIColor.clearColor;
+            ? [neon colorWithAlphaComponent:.30]
+            : (selected ? [neon colorWithAlphaComponent:.16] : UIColor.clearColor);
+        config.background.strokeColor = focused ? neon : UIColor.clearColor;
         config.background.strokeWidth = focused ? 1.5 : 0;
         tab.configuration = config;
         tab.accessibilityTraits = UIAccessibilityTraitButton |
@@ -725,6 +726,7 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         @"HUD AND INPUT", @"GAME FILES AND RUNTIME", @"MAKE THE CITY YOUR OWN"];
     for (NSUInteger i = 0; i < _pages.count; ++i) _pages[i].hidden = i != sender.tag;
     _pageTitle.text = titles[sender.tag];
+    _pageTitle.textColor = Ink(kNeon[sender.tag % (NSInteger)(sizeof(kNeon) / sizeof(kNeon[0]))]);
     _pageDetail.text = details[sender.tag];
     [self updateTabAppearance];
     [_navigationScroll scrollRectToVisible:sender.frame animated:NO];
@@ -826,15 +828,6 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         _playIntro.hidden = landscapePhoneMenu;
         _playSaveNote.hidden = landscapePhoneMenu;
         _episodeStatus.hidden = landscapePhoneMenu || !_episodeStatus.text.length;
-        // Two starts share one row; on a portrait phone drop their icons so
-        // each title keeps its width.
-        for (UIButton *start in @[_startButton, _balladButton]) {
-            UIButtonConfiguration *config = start.configuration;
-            config.image = portraitMenu ? nil : [UIImage systemImageNamed:@"play.fill"];
-            config.contentInsets = portraitMenu ? NSDirectionalEdgeInsetsMake(15, 12, 15, 12)
-                                                : NSDirectionalEdgeInsetsMake(17, 18, 17, 18);
-            start.configuration = config;
-        }
         _play.spacing = landscapePhoneMenu ? 12 : portraitMenu ? 16 : 22;
     }
 
@@ -916,10 +909,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _lightRed = LightSlider(@"lightRed", @"Light bar red", Ink(0xE5484D));
     _lightGreen = LightSlider(@"lightGreen", @"Light bar green", Ink(0x46A758));
     _lightBlue = LightSlider(@"lightBlue", @"Light bar blue", Ink(0x3E63DD));
+    _lightBrightness = LightSlider(@"lightBrightness", @"Light bar brightness", UIColor.whiteColor);
+    _lightBrightness.maximumValue = 100;
     _lightSwatch = [UIView new];
     _lightSwatch.layer.cornerRadius = 3;
     _lightSwatch.layer.borderWidth = 1;
-    _lightSwatch.layer.borderColor = Ink(0x3A4A4E).CGColor;
+    _lightSwatch.layer.borderColor = Ink(0x463A4E).CGColor;
     _lightSwatch.isAccessibilityElement = NO;
     [_lightSwatch.widthAnchor constraintEqualToConstant:44].active = YES;
     [_lightSwatch.heightAnchor constraintEqualToConstant:24].active = YES;
@@ -941,10 +936,16 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
             forControlEvents:UIControlEventValueChanged];
     }
     UILabel *title = Copy(@"CONTROLLER LIGHT BAR", 14, YES);
-    title.textColor = Ink(0xECE7D7);
+    title.textColor = Ink(0xF4EEF7);
     NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObjects:title,
         Copy(@"Color shown on a DualSense or DualShock 4 light bar. Changes show on a connected controller right away and stay set during gameplay.", 12, NO), nil];
     [views addObjectsFromArray:rows];
+    // Brightness scales the color above; Format > Illumination in the menu
+    // bar sets it too.
+    UILabel *brightness = Copy(@"BRIGHTNESS", 12, YES);
+    [_lightBrightness addTarget:self action:@selector(refreshConfigurationSummary)
+        forControlEvents:UIControlEventValueChanged];
+    [views addObject:Column(@[brightness, _lightBrightness], 4)];
     [views addObject:preview];
     _testVibrationButton = Action(@"TEST CONTROLLER VIBRATION", NO);
     _testVibrationButton.accessibilityIdentifier = @"settings.testVibration";
@@ -957,8 +958,11 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
 - (void)refreshConfigurationSummary {
     if (_lightRed) {
         const long red = lroundf(_lightRed.value), green = lroundf(_lightGreen.value), blue = lroundf(_lightBlue.value);
-        _lightSwatch.backgroundColor = Ink((unsigned)(red << 16 | green << 8 | blue));
-        _lightMetrics.text = [NSString stringWithFormat:@"R %ld · G %ld · B %ld", red, green, blue];
+        const long brightness = lroundf(_lightBrightness.value);
+        _lightSwatch.backgroundColor = [UIColor colorWithRed:red * brightness / 25500.0
+            green:green * brightness / 25500.0 blue:blue * brightness / 25500.0 alpha:1];
+        _lightMetrics.text = [NSString stringWithFormat:@"R %ld · G %ld · B %ld · %ld%%", red, green, blue, brightness];
+        _lightBrightness.accessibilityValue = [NSString stringWithFormat:@"%ld percent", brightness];
         _lightRed.accessibilityValue = [NSString stringWithFormat:@"%ld", red];
         _lightGreen.accessibilityValue = [NSString stringWithFormat:@"%ld", green];
         _lightBlue.accessibilityValue = [NSString stringWithFormat:@"%ld", blue];
