@@ -42,6 +42,7 @@ typedef enum {
     THEFT4_TRAINER_BOOST_STRENGTH,    // 1-10
     THEFT4_TRAINER_EXTRA_TRAFFIC,     // 0 off, 1 sports cars, 2 police, 3 unusual vehicles
     THEFT4_TRAINER_EXTRA_TRAFFIC_RATE,// seconds between added vehicles, 2-15
+    THEFT4_TRAINER_EXPLOSIVE_ROUNDS,  // the player's firearm shots explode where they land
     THEFT4_TRAINER_SETTING_COUNT
 } theft4_trainer_setting;
 

@@ -30,11 +30,11 @@ typedef NS_ENUM(NSInteger, Theft4ModItemKind) {
 + (instancetype)action:(NSString *)title help:(NSString *)help run:(void (^)(void))run;
 @end
 
-// The in-game mod menu, drawn over gameplay. A double-click on the DualSense
-// touchpad opens it; clicks on the touchpad's top and bottom move the
-// selection, right selects, toggles or raises a value, left goes back or
-// lowers one, and a double-click in its centre closes it. Rows can also be
-// tapped on screen.
+// The in-game mod menu, drawn over gameplay. Holding the DualSense
+// touchpad's click opens or closes it; clicks on the touchpad's top and bottom
+// move the selection, right selects, toggles or raises a value, left goes back
+// or lowers one, and a double-click in its centre returns to the previous
+// menu. Rows can also be tapped on screen.
 @interface Theft4ModMenu : UIView
 // overlays: rows for the app's on-screen graphs, added under DISPLAY.
 - (instancetype)initWithOverlays:(NSArray<Theft4ModItem *> *)overlays;

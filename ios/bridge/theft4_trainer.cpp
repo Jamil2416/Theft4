@@ -132,6 +132,8 @@ enum class N : int {
   SKIP_RADIO_FORWARD,
   APPLY_FORCE_TO_CAR, GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING, CREATE_RANDOM_CHAR_AS_DRIVER,
   CREATE_CHAR_INSIDE_CAR, TASK_CAR_DRIVE_WANDER, MARK_CHAR_AS_NO_LONGER_NEEDED, CAM_IS_SPHERE_VISIBLE,
+  IS_CHAR_SHOOTING, GET_CURRENT_CHAR_WEAPON, ADD_EXPLOSION, GET_CLOSEST_CHAR, GET_CLOSEST_CAR,
+  GET_CAR_COORDINATES,
   COUNT
 };
 
@@ -166,6 +168,8 @@ constexpr std::array<std::string_view, size_t(N::COUNT)> kNames = {
   "SKIP_RADIO_FORWARD",
   "APPLY_FORCE_TO_CAR", "GET_NTH_CLOSEST_CAR_NODE_WITH_HEADING", "CREATE_RANDOM_CHAR_AS_DRIVER",
   "CREATE_CHAR_INSIDE_CAR", "TASK_CAR_DRIVE_WANDER", "MARK_CHAR_AS_NO_LONGER_NEEDED", "CAM_IS_SPHERE_VISIBLE",
+  "IS_CHAR_SHOOTING", "GET_CURRENT_CHAR_WEAPON", "ADD_EXPLOSION", "GET_CLOSEST_CHAR", "GET_CLOSEST_CAR",
+  "GET_CAR_COORDINATES",
 };
 
 // Guest handler per command, recorded as the game registers it.
@@ -965,6 +969,70 @@ void ExtraTraffic(Script& s, const Tick& t) {
   injector.next = t.now + gap;
 }
 
+// Explosive Rounds. No script command reports where a bullet lands, so each
+// shot follows the gameplay camera's aim line, the line bullets travel
+// along: the explosion goes on the first ped or vehicle near the line, or
+// where it meets the ground. A wall is not seen, so a shot into one explodes
+// on the ground beyond it. Works for whichever character is playing.
+uint64_t next_round_ms = 0;  // only touched from inside the WAIT wrapper
+
+void ExplosiveRounds(Script& s, const Tick& t) {
+  if (!On(THEFT4_TRAINER_EXPLOSIVE_ROUNDS) || t.now < next_round_ms) return;
+  s.Call(N::IS_CHAR_SHOOTING, {t.ped});
+  if (!s.True()) return;
+  // Firearms only: unarmed, melee, thrown weapons and the rocket launcher
+  // (TU8 types 0-6 and 18) keep their own behaviour.
+  s.Call(N::GET_CURRENT_CHAR_WEAPON, {t.ped, Arg::Out(0)});
+  const uint32_t weapon = s.Out(0);
+  if (weapon <= 6 || weapon == 18) return;
+  // One explosion per shot: automatic weapons fire about ten rounds a second.
+  next_round_ms = t.now + 180;
+
+  s.Call(N::GET_GAME_CAM, {Arg::Out(0)});
+  const uint32_t cam = s.Out(0);
+  s.Call(N::GET_CAM_POS, {cam, Arg::Out(0), Arg::Out(1), Arg::Out(2)});
+  const float ox = s.OutF(0), oy = s.OutF(1), oz = s.OutF(2);
+  s.Call(N::GET_CAM_ROT, {cam, Arg::Out(0), Arg::Out(1), Arg::Out(2)});
+  float fx, fy, fz;
+  Forward(Wrap360(s.OutF(2)), s.OutF(0), fx, fy, fz);
+
+  constexpr float kStep = 1.5f, kRange = 120.0f;
+  bool hit = false;
+  float hx = 0, hy = 0, hz = 0;
+  for (float d = 2.0f; d <= kRange && !hit; d += kStep) {
+    const float px = ox + fx * d, py = oy + fy * d, pz = oz + fz * d;
+    s.Call(N::GET_CLOSEST_CHAR, {px, py, pz, 1.2f, true, true, Arg::Out(0)});
+    const uint32_t ped = s.True() ? s.Out(0) : 0;
+    if (ped && ped != t.ped) {
+      s.Call(N::GET_CHAR_COORDINATES, {ped, Arg::Out(0), Arg::Out(1), Arg::Out(2)});
+      hx = s.OutF(0); hy = s.OutF(1); hz = s.OutF(2);
+      hit = true;
+      break;
+    }
+    s.Call(N::GET_CLOSEST_CAR, {px, py, pz, 2.5f, false, 70u});
+    const uint32_t car = s.Ret();
+    if (car && car != t.car) {
+      s.Call(N::GET_CAR_COORDINATES, {car, Arg::Out(0), Arg::Out(1), Arg::Out(2)});
+      hx = s.OutF(0); hy = s.OutF(1); hz = s.OutF(2);
+      hit = true;
+      break;
+    }
+    // The highest surface below this point; 0 means its collision has not
+    // streamed in.
+    s.Call(N::GET_GROUND_Z_FOR_3D_COORD, {px, py, pz, Arg::Out(0)});
+    const float ground = s.OutF(0);
+    if (ground != 0.0f && pz - ground < 0.4f) {
+      hx = px; hy = py; hz = ground;
+      hit = true;
+    }
+  }
+  if (!hit) return;
+  const float dx = hx - t.x, dy = hy - t.y, dz = hz - t.z;
+  if (dx * dx + dy * dy + dz * dz < 3.0f * 3.0f) return;  // never at the shooter's feet
+  // Type 0 is the grenade explosion.
+  s.Call(N::ADD_EXPLOSION, {hx, hy, hz, 0u, 3.0f, true, false, 0.4f});
+}
+
 void Run(PPCContext& ctx, uint8_t* base) {
   const uint64_t now = NowMs();
   // Every running script calls WAIT; run once per game frame at most.
@@ -1002,6 +1070,7 @@ void Run(PPCContext& ctx, uint8_t* base) {
   if (t.dead) return;
   ExtraTraffic(s, t);
   ApplyPlayer(s, t);
+  ExplosiveRounds(s, t);
   ApplyVehicle(s, t);
   VehicleActions(s, t);
   Spawn(s, t);

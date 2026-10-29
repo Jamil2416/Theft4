@@ -544,8 +544,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [trainerRows addObject:[self setting:entry[0] detail:entry[1] toggle:toggle]];
     }
     _trainerSwitches = trainerSwitches;
-    NSString *menuNote = @"In game, double-click the DualSense touchpad to open the mod menu, or tap with three fingers and choose Mod Menu. "
-        @"Click the touchpad's top or bottom to move, right to select, left to go back; double-click its centre to close. "
+    NSString *menuNote = @"In game, hold the DualSense touchpad's click to open or close the mod menu, or tap with three fingers and choose Mod Menu. "
+        @"Click the touchpad's top or bottom to move, right to select, left to go back; double-click its centre for the previous menu. "
         @"It has these switches and more: vehicle spawner, no clip, free camera, teleport, weapons, money, time, weather, traffic and performance graphs. "
         @"Changes there are saved here too.";
     _mods = Column(@[
