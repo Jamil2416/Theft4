@@ -95,6 +95,17 @@ extern "C" void theft4_episode_start_configure(int32_t content_id);
 // TBoGT's episode entry in its setup2.xml: <id>4</id>.
 constexpr int32_t kTbogtContentId = 4;
 
+// The frame admission and runtime wait policy this process applied, for the
+// performance capture's headers. 0 and -1 until the game has started.
+static std::atomic<int> applied_cpu_present_admission{0};
+static std::atomic<int> applied_runtime_wait_fixes{-1};
+extern "C" int theft4_applied_cpu_present_admission(void) {
+    return applied_cpu_present_admission.load(std::memory_order_acquire);
+}
+extern "C" int theft4_applied_runtime_wait_fixes(void) {
+    return applied_runtime_wait_fixes.load(std::memory_order_acquire);
+}
+
 namespace {
 // This bring-up entry is deliberately one-shot per process. A runtime owns
 // guest threads and cannot be discarded while they may still be executing.
@@ -437,6 +448,8 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         if (!rex::thread::ConfigureRuntimeWaitFixes(wait_policy == "1")) {
             throw std::runtime_error("Runtime wait mode changed; fully close and reopen Theft4");
         }
+        applied_runtime_wait_fixes.store(rex::thread::RuntimeWaitFixesEnabled() ? 1 : 0,
+                                         std::memory_order_release);
         REXLOG_INFO("Theft4 build82 runtime waits: fixes={} (frozen until app restart); "
                     "multiwait={} guest-delay={} guest-priority={}",
                     rex::thread::RuntimeWaitFixesEnabled(),
@@ -456,6 +469,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         }
         const uint32_t cpu_present_limit = cpu_admission == "1" ? 1u : 2u;
         REXCVAR_SET(gta4_native_cpu_present_admission, cpu_present_limit);
+        applied_cpu_present_admission.store(int(cpu_present_limit), std::memory_order_release);
         REXLOG_INFO("Theft4 native CPU present admission set to {} ({})",
                     cpu_present_limit, cpu_admission_override ? "launch override" : "iOS default");
 

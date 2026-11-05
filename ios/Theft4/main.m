@@ -42,10 +42,16 @@ extern int rex_gta4_native_profile_status(void);
 #ifdef THEFT4_HAS_GAME_STARTUP
 // The iOS controller driver's rumble strength, 0...1.
 void rex_ios_input_set_rumble_strength(float strength);
+// Frame admission and runtime wait policy the game applied; 0 and -1 before it starts.
+int theft4_applied_cpu_present_admission(void);
+int theft4_applied_runtime_wait_fixes(void);
 #endif
 
 static NSString *const kLightBrightnessKey = @"Theft4LightBrightness";
 static NSString *const kRumbleStrengthKey = @"Theft4RumbleStrength";
+// Launcher performance tests, read when Play starts the game.
+static NSString *const kFrameOverlapKey = @"Theft4FrameOverlapTest";
+static NSString *const kFastMultiWaitsKey = @"Theft4FastMultiWaitsTest";
 // Format > Illumination: light-bar brightness for Dim, Bright and Brightest.
 static NSArray<NSNumber *> *kIlluminationLevels(void) { return @[@30, @65, @100]; }
 
@@ -58,6 +64,30 @@ static NSString *Theft4PerformanceProfileFields(void) {
         standard ? @"default" : @"unknown";
     return [NSString stringWithFormat:@"performance_profile=%@ profile_default=%d profile_sustained=%d",
         profile, standard, sustained];
+}
+
+// The commit this app was built from, stamped into Info.plist by the build.
+static NSString *Theft4SourceRevision(void) {
+    NSString *revision = NSBundle.mainBundle.infoDictionary[@"Theft4SourceRevision"];
+    return revision.length ? revision : @"unknown";
+}
+
+// The performance tests as set for this launch; the game reads the same
+// variables once when it starts. Unset means its defaults: admission 1, waits 0.
+static NSString *Theft4LaunchPerformanceTests(void) {
+    return [NSString stringWithFormat:@"frame_admission=%s runtime_wait_fixes=%s",
+        getenv("THEFT4_CPU_PRESENT_ADMISSION") ?: "1", getenv("THEFT4_RUNTIME_WAIT_FIXES") ?: "0"];
+}
+
+// What the running game applied, for the export header.
+static NSString *Theft4AppliedPerformanceTests(void) {
+#ifdef THEFT4_HAS_GAME_STARTUP
+    const int admission = theft4_applied_cpu_present_admission();
+    const int waits = theft4_applied_runtime_wait_fixes();
+    if (admission > 0 && waits >= 0)
+        return [NSString stringWithFormat:@"frame_admission=%d runtime_wait_fixes=%d", admission, waits];
+#endif
+    return @"game not started";
 }
 
 @interface Theft4MetalView : UIView
@@ -195,6 +225,17 @@ static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSStr
     [input close];
     if (success) [included addObject:label];
     return success;
+}
+
+// A file's path below a directory. The directory enumerator reports
+// /private/var paths for a /var root, so both are compared with their
+// symlinks resolved; rootPrefix comes from Theft4ResolvedDirectoryPrefix.
+static NSString *Theft4ResolvedDirectoryPrefix(NSURL *root) {
+    return [root.URLByResolvingSymlinksInPath.path stringByAppendingString:@"/"];
+}
+static NSString *Theft4RelativeDiagnosticPath(NSURL *url, NSString *rootPrefix) {
+    NSString *path = url.URLByResolvingSymlinksInPath.path;
+    return [path hasPrefix:rootPrefix] ? [path substringFromIndex:rootPrefix.length] : url.lastPathComponent;
 }
 
 static BOOL Theft4DiagnosticTextExtension(NSString *extension) {
@@ -509,6 +550,7 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
     dispatch_queue_t _publicationCaptureQueue;
     NSURL *_publicationCaptureURL;
     uint64_t _publicationCaptureCursor; // accessed only on _publicationCaptureQueue
+    uint64_t _publicationGpuCursor; // likewise, for the backend's per-frame GPU samples
     BOOL _publicationCaptureActive;
     BOOL _publicationCaptureWriteFailed;
     BOOL _publicationCaptureStartedForNativeProfile;
@@ -628,6 +670,7 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 - (void)resetAutomaticCaptureForNewSession;
 - (void)recordWindowState:(NSString *)event;
 - (void)skipIntroChanged:(UISwitch *)sender;
+- (void)performanceTestChanged:(UISwitch *)sender;
 - (void)downloadLatestLogCapture;
 - (void)exportSavesToFiles;
 - (void)importSavesFromFiles;
@@ -853,6 +896,12 @@ static void bootEvent(void *context, const char *event) {
     _bringupOverlay.skipIntro.on = ![NSUserDefaults.standardUserDefaults objectForKey:@"Theft4SkipIntro"] ||
         [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4SkipIntro"];
     [_bringupOverlay.skipIntro addTarget:self action:@selector(skipIntroChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    _bringupOverlay.frameOverlap.on = [NSUserDefaults.standardUserDefaults boolForKey:kFrameOverlapKey];
+    _bringupOverlay.fastMultiWaits.on = [NSUserDefaults.standardUserDefaults boolForKey:kFastMultiWaitsKey];
+    [_bringupOverlay.frameOverlap addTarget:self action:@selector(performanceTestChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    [_bringupOverlay.fastMultiWaits addTarget:self action:@selector(performanceTestChanged:)
         forControlEvents:UIControlEventValueChanged];
     _bringupOverlay.godMode.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ModGodMode"];
     _bringupOverlay.unlimitedAmmo.on = [NSUserDefaults.standardUserDefaults boolForKey:@"Theft4ModUnlimitedAmmo"];
@@ -1959,6 +2008,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"Theft4SkipIntro"];
 }
 
+- (void)performanceTestChanged:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.on
+        forKey:sender == _bringupOverlay.frameOverlap ? kFrameOverlapKey : kFastMultiWaitsKey];
+}
+
 // God Mode, Unlimited Ammo and the other trainer switches on the launcher's
 // Mods page. They are saved for the next launch and, once the game runs,
 // also take effect immediately (the mod menu changes the same settings).
@@ -2437,6 +2491,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     BOOL fsrBoost = _fsrBoost.on;
     BOOL motionBlur = _motionBlur.on;
     BOOL depthOfField = _depthOfField.on;
+    NSString *sourceRevision = Theft4SourceRevision();
+    NSString *appliedTests = Theft4AppliedPerformanceTests();
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSFileManager *fm = NSFileManager.defaultManager;
@@ -2476,6 +2532,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             @"Theft4 performance capture export\n"
              "Generated: %@\n"
              "App: %@ %@ (%@)\n"
+             "Source revision: %@\n"
+             "Performance tests applied in this app session: %@\n"
              "Bundle: %@\n"
              "Device: %@ / %@\n"
              "iOS/iPadOS: %@\n"
@@ -2490,7 +2548,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
              "Motion blur: %@\n"
              "Depth of field: %@\n"
              "This is a bounded text bundle. Native performance CSV/JSON artifacts are included below when available.\n",
-            [NSDate date], Theft4DisplayName(), version, build,
+            [NSDate date], Theft4DisplayName(), version, build, sourceRevision, appliedTests,
             NSBundle.mainBundle.bundleIdentifier ?: @"unknown", deviceName, machine,
             systemVersion, (unsigned long long)(physicalMemory >> 20),
             (unsigned long long)(availableMemory >> 20), profile,
@@ -2593,12 +2651,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                                 url.lastPathComponent, enumerationError.localizedDescription]];
                             return YES;
                         }];
+        NSString *nativeDiagnosticsPrefix = Theft4ResolvedDirectoryPrefix(nativeDiagnosticsURL);
         for (NSURL *url in nativeEnumerator) {
             NSNumber *regular = nil;
             [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
             if (!regular.boolValue || !Theft4DiagnosticTextExtension(url.pathExtension)) continue;
             NSString *label = [NSString stringWithFormat:@"LibertyRecomp/Diagnostics/%@",
-                               [url.path substringFromIndex:nativeDiagnosticsURL.path.length + 1]];
+                               Theft4RelativeDiagnosticPath(url, nativeDiagnosticsPrefix)];
             success = success && Theft4AppendDiagnosticFile(stream, url, label,
                                                               &budget, included, skipped);
             if (!success) break;
@@ -2614,13 +2673,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                                     url.lastPathComponent, enumerationError.localizedDescription]];
                                 return YES;
                             }];
+            NSString *directoryPrefix = Theft4ResolvedDirectoryPrefix(directoryURL);
             for (NSURL *url in enumerator) {
                 NSNumber *regular = nil;
                 [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
                 if (!regular.boolValue || !Theft4DiagnosticTextExtension(url.pathExtension)) continue;
                 NSString *label = [NSString stringWithFormat:@"Theft4/startup/%@/%@",
-                                   directoryName,
-                                   [url.path substringFromIndex:directoryURL.path.length + 1]];
+                                   directoryName, Theft4RelativeDiagnosticPath(url, directoryPrefix)];
                 success = success && Theft4AppendDiagnosticFile(stream, url, label,
                                                                   &budget, included, skipped);
                 if (!success) break;
@@ -3088,6 +3147,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             if (count < 256) break;
         }
         if (lostTotal) [text appendFormat:@"lost,,,%llu,\n", (unsigned long long)lostTotal];
+        theft4_publication_gpu_sample gpuSamples[256];
+        uint64_t gpuLostTotal = 0;
+        for (unsigned batch = 0; batch < 16; ++batch) {
+            uint64_t gpuLost = 0;
+            const uint32_t count = theft4_publication_capture_read_gpu(
+                &self->_publicationGpuCursor, gpuSamples, 256, &gpuLost);
+            gpuLostTotal += gpuLost;
+            for (uint32_t i = 0; i < count; ++i)
+                [text appendFormat:@"gpu,%llu,%llu,,gpu_ms=%.3f slot_wait_ms=%.3f drawable_ms=%.3f\n",
+                    (unsigned long long)gpuSamples[i].present,
+                    (unsigned long long)gpuSamples[i].monotonic_ns, gpuSamples[i].gpu_ms,
+                    gpuSamples[i].slot_wait_ms, gpuSamples[i].drawable_ms];
+            if (count < 256) break;
+        }
+        if (gpuLostTotal) [text appendFormat:@"gpu_lost,,,%llu,\n", (unsigned long long)gpuLostTotal];
         const theft4_output_policy output = theft4_metal_get_output_policy();
         [text appendFormat:@"context,,%llu,,thermal=%ld render=%ux%u output=%ux%u\n",
             (unsigned long long)(CACurrentMediaTime() * 1e9),
@@ -3144,7 +3218,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _publicationCaptureURL = [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"publication-trace-%@-%@.csv", [formatter stringFromDate:NSDate.date],
             [NSUUID.UUID.UUIDString substringToIndex:8]]];
-    NSString *header = [NSString stringWithFormat:@"# build%@: runtime_wait_fixes=%d; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"], THEFT4_DEFAULT_RUNTIME_WAIT_FIXES, THEFT4_DEFAULT_DIRECT_GUEST_CLOCK];
+    NSString *header = [NSString stringWithFormat:@"# build%@ source=%@: %@; direct_guest_clock=%d; publication timestamps, not scanout or GPU durations; gpu rows: frame=running count of presented frames completed during captures in this app session, timestamp=completion seen, gpu_ms=sum of GPU spans of that frame's command buffers, slot_wait_ms=CPU wait for a free GPU frame slot, drawable_ms=CPU wait for a drawable\nkind,frame,monotonic_ns,lost_count,note\nstatus,,,,collecting\n", NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"], Theft4SourceRevision(), Theft4LaunchPerformanceTests(), THEFT4_DEFAULT_DIRECT_GUEST_CLOCK];
     header = [header stringByAppendingFormat:@"marker,,%llu,,%@\n",
         (unsigned long long)(CACurrentMediaTime() * 1e9), Theft4PerformanceProfileFields()];
     if (![header writeToURL:_publicationCaptureURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
@@ -3168,9 +3242,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _runtimeCallerURL = [directory URLByAppendingPathComponent:
         [_publicationCaptureURL.lastPathComponent stringByReplacingOccurrencesOfString:@"publication-trace-" withString:@"runtime-callers-"]];
     NSString *callerHeader = [NSString stringWithFormat:
-        @"# build%@; clock_direct=%d runtime_wait_fixes=%d; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
+        @"# build%@; clock_direct=%d %@; host_tick_frequency=%llu image_load_address=0x%llx; counters=cumulative; wall=sampled_every_64_calls_including_descheduling; snapshots=approximate; capacities=128_threads_64_sites_per_thread_8MiB; dropped_UINT64_MAX=thread_capacity_exceeded; kinds=1:native_clock_return_PC 2:legacy_clock_contention 3:native_yield_return_PC 4:guest_zero_delay_LR 5:guest_nonzero_delay_LR 6:guest_wait_LR 7:guest_multiwait_LR 8:guest_82849910_incoming_LR 9:guest_82A1A200_incoming_LR 10:guest_82193D80_incoming_LR 11:guest_signalwait_LR; nested_wall_samples_overlap; sampled_max_is_not_all_call_max\nmonotonic_ns,frame,thread_id,kind,site,calls,samples,wall_ticks,max_wall_ticks\n",
         NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"],
-        THEFT4_DEFAULT_DIRECT_GUEST_CLOCK, THEFT4_DEFAULT_RUNTIME_WAIT_FIXES,
+        THEFT4_DEFAULT_DIRECT_GUEST_CLOCK, Theft4LaunchPerformanceTests(),
         (unsigned long long)rex_runtime_callers_frequency(),
         (unsigned long long)(uintptr_t)_dyld_get_image_header(0)];
     if (![callerHeader writeToURL:_runtimeCallerURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
@@ -3199,6 +3273,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     rex_frame_scheduling_capture(1);
     rex_runtime_callers_enable(1);
     dispatch_resume(_runtimeCallerTimer);
+    _publicationGpuCursor = theft4_publication_capture_gpu_cursor();
     _publicationCaptureCursor = theft4_publication_capture_start();
     _publicationCaptureStartTime = CACurrentMediaTime();
     _publicationCaptureLimit = 300;
@@ -3472,6 +3547,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!theft4_retail_mode()) [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
         theft4_apply_performance_defaults();
+        // After the defaults, which always write THEFT4_RUNTIME_WAIT_FIXES=0,
+        // and before the capture header records them. Off leaves the defaults
+        // and any engineering launch override in place.
+        if (_bringupOverlay.frameOverlap.on) setenv("THEFT4_CPU_PRESENT_ADMISSION", "2", 1);
+        if (_bringupOverlay.fastMultiWaits.on) setenv("THEFT4_RUNTIME_WAIT_FIXES", "1", 1);
         setenv("THEFT4_SKIP_INTRO", _bringupOverlay.skipIntro.on ? "1" : "0", 1);
         if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime
@@ -3547,6 +3627,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         _anisotropicFiltering.enabled = NO;
         _motionBlur.enabled = NO;
         _depthOfField.enabled = NO;
+        _bringupOverlay.frameOverlap.enabled = NO;
+        _bringupOverlay.fastMultiWaits.enabled = NO;
         for (UISegmentedControl *choice in @[_shadowQuality, _drawDistance, _modelDetail,
                                               _reflectionQuality, _antiAliasing])
             choice.enabled = NO;

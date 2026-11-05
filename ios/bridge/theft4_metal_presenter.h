@@ -81,6 +81,24 @@ void theft4_publication_capture_stop(void);
 uint32_t theft4_publication_capture_read(uint64_t* cursor,
     theft4_publication_sample* samples, uint32_t capacity, uint64_t* lost);
 
+// GPU cost of presented frames, recorded by the Metal backend only while a
+// publication capture runs: the GPU time of the frame's command buffers, and
+// the CPU waits for a free GPU frame slot and for a drawable. The cursor from
+// theft4_publication_capture_gpu_cursor() excludes earlier captures.
+typedef struct theft4_publication_gpu_sample {
+  uint64_t present;
+  uint64_t monotonic_ns;
+  double gpu_ms;
+  double slot_wait_ms;
+  double drawable_ms;
+} theft4_publication_gpu_sample;
+bool theft4_publication_capture_active(void);
+void theft4_publication_capture_note_gpu(uint64_t present, double gpu_ms,
+    double slot_wait_ms, double drawable_ms);
+uint64_t theft4_publication_capture_gpu_cursor(void);
+uint32_t theft4_publication_capture_read_gpu(uint64_t* cursor,
+    theft4_publication_gpu_sample* samples, uint32_t capacity, uint64_t* lost);
+
 // Rolling publication intervals, not physical display scanout times. UI control
 // and snapshots are main-thread only; the presenter is the sole sample writer.
 #define THEFT4_FRAME_TIME_SAMPLES 180

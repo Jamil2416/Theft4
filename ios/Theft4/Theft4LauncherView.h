@@ -39,6 +39,11 @@
 @property(nonatomic, readonly) UISegmentedControl *reflectionQuality;
 @property(nonatomic, readonly) UISegmentedControl *antiAliasing;
 @property(nonatomic, readonly) UISwitch *performanceCapture;
+// Performance tests, read when Play starts the game: frame overlap admits two
+// frames to the renderer instead of one; fast multi-waits uses the runtime's
+// notification-driven waits instead of 1 ms polling.
+@property(nonatomic, readonly) UISwitch *frameOverlap;
+@property(nonatomic, readonly) UISwitch *fastMultiWaits;
 @property(nonatomic, readonly) UISwitch *skipIntro;
 @property(nonatomic, readonly) UISwitch *customTimeCycle;
 @property(nonatomic, readonly) UISwitch *nativeAspect;

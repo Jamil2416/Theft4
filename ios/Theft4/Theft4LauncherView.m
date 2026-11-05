@@ -441,6 +441,12 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
     _performanceCapture = [UISwitch new];
     _performanceCapture.onTintColor = Ink(0xE8873A);
     _performanceCapture.accessibilityIdentifier = @"settings.performanceCapture";
+    _frameOverlap = [UISwitch new];
+    _frameOverlap.onTintColor = Ink(0xE8873A);
+    _frameOverlap.accessibilityIdentifier = @"settings.frameOverlap";
+    _fastMultiWaits = [UISwitch new];
+    _fastMultiWaits.onTintColor = Ink(0xE8873A);
+    _fastMultiWaits.accessibilityIdentifier = @"settings.fastMultiWaits";
     _downloadLogButton = Action(@"DOWNLOAD LATEST LOG CAPTURE", NO);
     _downloadLogButton.accessibilityIdentifier = @"diagnostics.downloadLatestCapture";
     _exportSavesButton = Action(@"EXPORT SAVES TO FILES", NO);
@@ -456,6 +462,8 @@ static UISegmentedControl *ChoiceControl(NSArray<NSString *> *items, NSString *i
         [self setting:@"SKIP INTRO VIDEOS" detail:@"Skip opening credits and Rockstar logos at the next launch. Game loading still completes normally." toggle:_skipIntro],
         Copy(@"Optimized for normal play. Development logging and probes stay off. Optional graphs and performance captures are available in the launcher.", 12, NO),
         [self setting:@"LONG PERFORMANCE CAPTURE" detail:@"Off each time the app opens. Enable before Play for up to 5 minutes of timing, without development probes. Turn on the frame-time graph to mark a spike or stop and save; capture also saves when the app goes into the background. Data stays in memory during play." toggle:_performanceCapture],
+        [self setting:@"FRAME OVERLAP TEST" detail:@"Lets the game prepare its next frame while the renderer finishes the previous one. Applies when you press Play. Performance captures record whether it was on." toggle:_frameOverlap],
+        [self setting:@"FAST MULTI-WAITS TEST" detail:@"Wakes game threads as soon as any awaited object is ready instead of checking every millisecond. Applies when you press Play. Performance captures record whether it was on." toggle:_fastMultiWaits],
         _downloadLogButton,
         Copy(@"SAVE TRANSFER", 13, YES),
         Copy(@"Export a dated backup to Files → On My iPhone/iPad → Theft4 → Save Exports. Import a Theft4 save-export folder only while the game is closed; current saves are backed up first.", 12, NO),

@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <os/lock.h>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -27,6 +28,11 @@ std::atomic<uint64_t> published_game_frames{0};
 theft4::FrameTimeHistory<> frame_time_history;
 theft4::PublicationTrace<> publication_trace;
 std::atomic<bool> fps_counter_enabled{false};
+// GPU samples of a running capture, written at most once per presented frame.
+// The lock keeps them consistent whichever thread finishes a command buffer.
+os_unfair_lock gpu_trace_lock = OS_UNFAIR_LOCK_INIT;
+std::array<theft4_publication_gpu_sample, 4096> gpu_trace{};
+uint64_t gpu_trace_written = 0;
 
 // Protected by presenter_lock. Latched before the game renderer is created.
 theft4_output_policy launch_output = theft4_output_policy_for_enhanced(true);
@@ -230,6 +236,37 @@ uint32_t theft4_publication_capture_read(uint64_t* cursor,
   const auto count = publication_trace.CopyAfter(*cursor, batch, std::min(capacity, 256u), *lost);
   for (size_t i = 0; i < count; ++i) samples[i] = {batch[i].frame, batch[i].monotonic_ns};
   return uint32_t(count);
+}
+
+bool theft4_publication_capture_active(void) { return publication_trace.Enabled(); }
+void theft4_publication_capture_note_gpu(uint64_t present, double gpu_ms,
+    double slot_wait_ms, double drawable_ms) {
+  if (!publication_trace.Enabled()) return;
+  const uint64_t now_ns = uint64_t(CACurrentMediaTime() * 1e9);
+  os_unfair_lock_lock(&gpu_trace_lock);
+  gpu_trace[gpu_trace_written % gpu_trace.size()] = {present, now_ns, gpu_ms, slot_wait_ms, drawable_ms};
+  ++gpu_trace_written;
+  os_unfair_lock_unlock(&gpu_trace_lock);
+}
+uint64_t theft4_publication_capture_gpu_cursor(void) {
+  os_unfair_lock_lock(&gpu_trace_lock);
+  const uint64_t written = gpu_trace_written;
+  os_unfair_lock_unlock(&gpu_trace_lock);
+  return written;
+}
+uint32_t theft4_publication_capture_read_gpu(uint64_t* cursor,
+    theft4_publication_gpu_sample* samples, uint32_t capacity, uint64_t* lost) {
+  if (!cursor || !samples || !lost || !capacity) return 0;
+  os_unfair_lock_lock(&gpu_trace_lock);
+  // Samples overwritten before this read are counted as lost, never invented.
+  const uint64_t first = gpu_trace_written > gpu_trace.size() ? gpu_trace_written - gpu_trace.size() : 0;
+  *lost = *cursor < first ? first - *cursor : 0;
+  *cursor = std::min(std::max(*cursor, first), gpu_trace_written);
+  const uint32_t count = uint32_t(std::min<uint64_t>(capacity, gpu_trace_written - *cursor));
+  for (uint32_t i = 0; i < count; ++i) samples[i] = gpu_trace[(*cursor + i) % gpu_trace.size()];
+  *cursor += count;
+  os_unfair_lock_unlock(&gpu_trace_lock);
+  return count;
 }
 
 void theft4_frame_time_set_enabled(bool enabled) {

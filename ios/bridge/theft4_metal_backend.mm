@@ -3,6 +3,7 @@
 #include "theft4_metal_frame.h"
 #include "theft4_upload_budget.h"
 #include "theft4_metal_profiling.h"
+#include "theft4_metal_presenter.h"
 #include <algorithm>
 #include <deque>
 #include <thread>
@@ -94,13 +95,16 @@ class Backend final:public render::FrameBackend {
     }
     using Clock=std::chrono::steady_clock;
     const bool diagnostics=!theft4_retail_mode();
-    const auto now=[&]{return diagnostics?Clock::now():Clock::time_point{};};
+    // A performance capture also needs the slot and drawable waits.
+    const bool timed=diagnostics||theft4_publication_capture_active();
+    const auto now=[&]{return timed?Clock::now():Clock::time_point{};};
     const auto began=now();
     // Reap completed work and bound admission before acquiring a scarce drawable.
     while(!pending_.empty() && (pending_.front().receipt.Completed() || pending_.size()>=maximum_)) {
       if(!FinishOldest(error))return false;
     }
     const auto admitted=now();
+    const double slot_wait_ms=std::chrono::duration<double,std::milli>(admitted-began).count();
     const bool profile_gpu=detailed_gpu_&&!theft4_retail_mode()&&present&&plan->commands.size()>=40&&
         (!profile_attempted_||presentations_-last_profile_presentation_>=180);
     if(profile_gpu){profile_attempted_=true;last_profile_presentation_=presentations_;}
@@ -118,12 +122,14 @@ class Backend final:public render::FrameBackend {
         }
         const auto drawable_begin=now();
         id<CAMetalDrawable> drawable=[layer_ nextDrawable];
-        if(diagnostics)drawable_ms=std::chrono::duration<double,std::milli>(now()-drawable_begin).count();
+        if(timed)drawable_ms=std::chrono::duration<double,std::milli>(now()-drawable_begin).count();
         if(!drawable){error="Metal drawable temporarily unavailable";return false;}
         receipt=adapter_->SubmitAndPresent(plan,output->key,drawable,error,published,profile_gpu);
       } else receipt=adapter_->Submit(plan,error,published);
     }
     if(!receipt)return false;
+    // Only accepted submissions count toward the presented frame's slot wait.
+    frame_slot_wait_ms_+=slot_wait_ms;
     const auto submitted_at=now();
     const double submit_ms=diagnostics?std::chrono::duration<double,std::milli>(submitted_at-began).count():0;
     // The periodic summary can miss the exact spike. Keep a bounded slow-only
@@ -188,7 +194,9 @@ class Backend final:public render::FrameBackend {
     // explicitly profiled submission needs the full plan for pass attribution.
     auto surfaces=plan->surfaces;
     pending_.push_back({std::move(receipt),profile_gpu?std::move(plan):nullptr,std::move(surfaces),
-                       present,timing.render_passes,timing.image_copies});
+                       present,timing.render_passes,timing.image_copies,
+                       present?frame_slot_wait_ms_:0,drawable_ms});
+    if(present)frame_slot_wait_ms_=0;
     error.clear();return true;
   }
   bool Drain(std::string& error) override {
@@ -243,6 +251,8 @@ class Backend final:public render::FrameBackend {
     std::shared_ptr<const render::FramePlan> owner;
     std::vector<std::shared_ptr<const render::Surface>> surfaces;
     bool present=false;uint64_t render_passes=0,image_copies=0;
+    // For a presented frame: its CPU waits for a GPU slot and a drawable.
+    double slot_wait_ms=0,drawable_ms=0;
   };
   bool Worker(std::string& error) const {
     if(!renderer_ || !adapter_){error="Metal worker is not open";return false;}
@@ -255,6 +265,15 @@ class Backend final:public render::FrameBackend {
   bool FinishOldest(std::string& error) {
     auto submitted=std::move(pending_.front());pending_.pop_front();
     const bool okay=submitted.receipt.Wait(error);
+    // One capture sample per presented frame: its command buffers' GPU time.
+    if(okay&&theft4_publication_capture_active()) {
+      capture_gpu_ms_+=submitted.receipt.GpuMilliseconds();
+      if(submitted.present) {
+        theft4_publication_capture_note_gpu(++capture_presents_,capture_gpu_ms_,
+            submitted.slot_wait_ms,submitted.drawable_ms);
+        capture_gpu_ms_=0;
+      }
+    } else capture_gpu_ms_=0;
     if(okay&&!theft4_retail_mode()) {
       if(submitted.present&&gpu_sample_count_%60==0) {
         char context[256];std::snprintf(context,sizeof(context),"gta4-metal-device-context: thermal-state=%ld low-power=%d",
@@ -339,6 +358,9 @@ class Backend final:public render::FrameBackend {
   std::chrono::steady_clock::time_point last_slow_submission_{};
   std::array<double,60> gpu_samples_{};size_t gpu_sample_count_=0;
   double frame_gpu_work_ms_=0;
+  // Performance capture: waits since the last presented frame, and the GPU
+  // time of the frame being completed.
+  double frame_slot_wait_ms_=0,capture_gpu_ms_=0;uint64_t capture_presents_=0;
   bool detailed_gpu_=false,profile_attempted_=false;uint64_t last_profile_presentation_=0;
   bool open_attempted_=false;
   std::thread::id worker_;
