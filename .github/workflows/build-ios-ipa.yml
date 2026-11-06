@@ -16,6 +16,12 @@ on:
       - 'tools/package_ios_ipa.sh'
       - 'tools/build_ios_release.sh'
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'auto = Apple silicon, Intel if none is given; intel = skip the Apple silicon queue'
+        type: choice
+        options: [auto, intel]
+        default: auto
 
 permissions:
   contents: read
@@ -30,6 +36,8 @@ concurrency:
 jobs:
   macos26:
     name: macOS 26 Apple silicon (Xcode 26.6)
+    # Push runs have no inputs, so they always try Apple silicon first.
+    if: ${{ inputs.runner != 'intel' }}
     uses: ./.github/workflows/build-ios-ipa-build.yml
     with:
       runner: macos-26
@@ -39,7 +47,8 @@ jobs:
   # dropped after about 15 minutes in the queue), build on an Intel macOS 26
   # machine, a separate pool, with the same Xcode. The app is cross-compiled
   # for arm64 either way; only the build machine differs, and it is slower.
-  # It does not run when the first build started and failed, or when the run
+  # Run workflow with runner=intel starts it at once. It does not run when
+  # the first build started and failed, or when the run
   # was cancelled.
   macos26-intel-fallback:
     name: macOS 26 Intel fallback (Xcode 26.6)
