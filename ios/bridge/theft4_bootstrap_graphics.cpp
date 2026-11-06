@@ -426,22 +426,28 @@ class Theft4BootstrapGraphics final : public rex::system::IGraphicsSystem {
   }
 
   int VblankWorkerMain() {
+    // Fixed 60 Hz schedule: advance the deadline by one period instead of
+    // re-basing on the late wake time (which drifted every vblank later), and
+    // sleep to it instead of waking every 1 ms (~1000 wakeups/s for 60 events).
+    constexpr auto kPeriod = std::chrono::nanoseconds(16666667);
     auto next_vblank = std::chrono::steady_clock::now();
     while (running_.load(std::memory_order_acquire)) {
-      const auto now = std::chrono::steady_clock::now();
-      if (now >= next_vblank) {
-        if (!metal_clear_presented_.load(std::memory_order_acquire) &&
-            theft4_metal_present_clear(0.02, 0.20, 0.22, 1.0)) {
-          metal_clear_presented_.store(true, std::memory_order_release);
-          REXLOG_INFO("Theft4 Metal presenter committed its first drawable");
-        }
-        if (command_processor_) {
-          command_processor_->increment_counter();
-        }
-        DispatchInterrupt(0, 2);
-        next_vblank = now + std::chrono::microseconds(16667);
+      std::this_thread::sleep_until(next_vblank);
+      if (!running_.load(std::memory_order_acquire)) break;
+      if (!metal_clear_presented_.load(std::memory_order_acquire) &&
+          theft4_metal_present_clear(0.02, 0.20, 0.22, 1.0)) {
+        metal_clear_presented_.store(true, std::memory_order_release);
+        REXLOG_INFO("Theft4 Metal presenter committed its first drawable");
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (command_processor_) {
+        command_processor_->increment_counter();
+      }
+      DispatchInterrupt(0, 2);
+      next_vblank += kPeriod;
+      // After a stall (app suspended, debugger) resume the cadence from now
+      // rather than firing a burst of catch-up interrupts.
+      const auto now = std::chrono::steady_clock::now();
+      if (now - next_vblank > kPeriod) next_vblank = now + kPeriod;
     }
     return 0;
   }

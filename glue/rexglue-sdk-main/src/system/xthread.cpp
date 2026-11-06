@@ -1074,8 +1074,10 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
         CheckTitleTermination();
         return result == rex::thread::SleepResult::kAlerted ? X_STATUS_USER_APC : X_STATUS_SUCCESS;
       }
-      // Guest below-normal is a negative increment, independent of host enums.
-      if (priority() < 0) rex::thread::Sleep(Micros(100));
+      // Keep the legacy throttle: guest increments up to the host kBelowNormal
+      // value (8 on Apple) sleep 100 us. Yielding there let one GTA IV worker
+      // spin ~62k Sleep(0)/s on iPad (6 Nov capture), burning a core for nothing.
+      if (priority() <= rex::thread::ThreadPriority::kBelowNormal) rex::thread::Sleep(Micros(100));
       else rex::thread::MaybeYield();
       CheckTitleTermination();
       return X_STATUS_SUCCESS;

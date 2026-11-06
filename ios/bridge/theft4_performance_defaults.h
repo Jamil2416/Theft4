@@ -6,8 +6,8 @@
 // comparison settings; upgrading cannot revive an obsolete experiment choice.
 #define THEFT4_DEFAULT_FRAME_SCHEDULING 1
 #define THEFT4_DEFAULT_DIRECT_GUEST_CLOCK 1
-#define THEFT4_DEFAULT_RUNTIME_WAIT_FIXES 0
-#define THEFT4_DEFAULT_RUNTIME_WAIT_POLICY "0"
+#define THEFT4_DEFAULT_RUNTIME_WAIT_FIXES 1
+#define THEFT4_DEFAULT_RUNTIME_WAIT_POLICY "1"
 
 static inline void theft4_apply_performance_defaults(void) {
     setenv("THEFT4_COMMAND_STREAM", "1", 1);
@@ -23,5 +23,7 @@ static inline void theft4_apply_performance_defaults(void) {
     setenv("THEFT4_RENDERER_EFFICIENCY", "1", 1);
     setenv("THEFT4_PREWARM_TARGET_REUSE", "1", 1);
     setenv("THEFT4_DIRECT_GUEST_CLOCK", "1", 1);
-    setenv("THEFT4_RUNTIME_WAIT_FIXES", "0", 1);
+    setenv("THEFT4_RUNTIME_WAIT_FIXES", "1", 1);
+    // Frame overlap: measured steadier at the same 30 fps (6 Nov captures).
+    setenv("THEFT4_CPU_PRESENT_ADMISSION", "2", 1);
 }

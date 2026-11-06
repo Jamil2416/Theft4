@@ -750,7 +750,9 @@ bool Frame::Present(id<CAMetalDrawable> drawable, std::string& error) {
       drawable.texture != impl_->stored_color)
     return Error(error, "Metal presentation requires the stored drawable pass");
   if(impl_->blit){[impl_->blit endEncoding];impl_->blit=nil;}
-  [impl_->buffer presentDrawable:drawable]; impl_->presented = true; return true;
+  // The iOS build runs at 30 fps on a 60 Hz panel. Holding each frame for at
+  // least two refreshes stops a quick frame after a late one showing for one.
+  [impl_->buffer presentDrawable:drawable afterMinimumDuration:1.0/30.0]; impl_->presented = true; return true;
 }
 void Frame::RetainUntilCompletion(std::shared_ptr<void> lease) {
   if(*this)impl_->upload_lease=std::move(lease);

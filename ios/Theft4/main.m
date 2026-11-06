@@ -50,8 +50,9 @@ int theft4_applied_runtime_wait_fixes(void);
 static NSString *const kLightBrightnessKey = @"Theft4LightBrightness";
 static NSString *const kRumbleStrengthKey = @"Theft4RumbleStrength";
 // Launcher performance tests, read when Play starts the game.
-static NSString *const kFrameOverlapKey = @"Theft4FrameOverlapTest";
-static NSString *const kFastMultiWaitsKey = @"Theft4FastMultiWaitsTest";
+// New keys so every install starts with both on; the old *Test keys held test choices.
+static NSString *const kFrameOverlapKey = @"Theft4FrameOverlap";
+static NSString *const kFastMultiWaitsKey = @"Theft4FastMultiWaits";
 // Format > Illumination: light-bar brightness for Dim, Bright and Brightest.
 static NSArray<NSNumber *> *kIlluminationLevels(void) { return @[@30, @65, @100]; }
 
@@ -76,7 +77,7 @@ static NSString *Theft4SourceRevision(void) {
 // variables once when it starts. Unset means its defaults: admission 1, waits 0.
 static NSString *Theft4LaunchPerformanceTests(void) {
     return [NSString stringWithFormat:@"frame_admission=%s runtime_wait_fixes=%s",
-        getenv("THEFT4_CPU_PRESENT_ADMISSION") ?: "1", getenv("THEFT4_RUNTIME_WAIT_FIXES") ?: "0"];
+        getenv("THEFT4_CPU_PRESENT_ADMISSION") ?: "2", getenv("THEFT4_RUNTIME_WAIT_FIXES") ?: "1"];
 }
 
 // What the running game applied, for the export header.
@@ -812,6 +813,8 @@ static void bootEvent(void *context, const char *event) {
         @"Theft4EnhancedOutput1080p": @(!_legacyIPadProfile),
         @"Theft4ExperimentalFSRBoost": @NO,
         @"Theft4MotionBlur": @NO,
+        @"Theft4FrameOverlap": @YES,
+        @"Theft4FastMultiWaits": @YES,
         @"Theft4DepthOfField": @YES,
         @"Theft4ShadowQuality": @1,
         @"Theft4DrawDistance": @1,
@@ -3547,11 +3550,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         if (!theft4_retail_mode()) [self record:[@"performance.launch " stringByAppendingString:Theft4PerformanceProfileFields()]];
         rex_frame_scheduling_set_mode(THEFT4_DEFAULT_FRAME_SCHEDULING);
         theft4_apply_performance_defaults();
-        // After the defaults, which always write THEFT4_RUNTIME_WAIT_FIXES=0,
-        // and before the capture header records them. Off leaves the defaults
-        // and any engineering launch override in place.
-        if (_bringupOverlay.frameOverlap.on) setenv("THEFT4_CPU_PRESENT_ADMISSION", "2", 1);
-        if (_bringupOverlay.fastMultiWaits.on) setenv("THEFT4_RUNTIME_WAIT_FIXES", "1", 1);
+        // After the defaults (both on) and before the capture header records
+        // them; switching one off restores the earlier behaviour as a fallback.
+        if (!_bringupOverlay.frameOverlap.on) setenv("THEFT4_CPU_PRESENT_ADMISSION", "1", 1);
+        if (!_bringupOverlay.fastMultiWaits.on) setenv("THEFT4_RUNTIME_WAIT_FIXES", "0", 1);
         setenv("THEFT4_SKIP_INTRO", _bringupOverlay.skipIntro.on ? "1" : "0", 1);
         if (_performanceCapture.on) [self beginPublicationCapture];
         // Apply the persisted launcher choice before the background runtime

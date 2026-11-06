@@ -463,7 +463,7 @@ int theft4_start_game(const char* game_directory, const char* support_directory,
         // A fresh launch with 2 restores build 79's CPU admission behavior.
         const char* cpu_admission_override = std::getenv("THEFT4_CPU_PRESENT_ADMISSION");
         const std::string_view cpu_admission =
-            cpu_admission_override ? cpu_admission_override : "1";
+            cpu_admission_override ? cpu_admission_override : "2";
         if (cpu_admission != "1" && cpu_admission != "2") {
             throw std::runtime_error("THEFT4_CPU_PRESENT_ADMISSION must be 1 or 2");
         }
