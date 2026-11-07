@@ -138,7 +138,8 @@ if(REXGLUE_RUNTIME_ONLY)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/game-tools")
 endif()
 
-add_library(theft4_core_bridge STATIC bridge/theft4_core.cpp bridge/theft4_touch_input.cpp)
+add_library(theft4_core_bridge STATIC bridge/theft4_core.cpp bridge/theft4_touch_input.cpp
+    bridge/theft4_crash_evidence.cpp)
 target_include_directories(theft4_core_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
 target_link_libraries(theft4_core_bridge PRIVATE rex::core)
 target_compile_features(theft4_core_bridge PRIVATE cxx_std_23)

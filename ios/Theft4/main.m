@@ -23,6 +23,7 @@
 #include "../../glue/rexglue-sdk-main/src/graphics/gta4_native/native_light_capture.h"
 #include "../../glue/rexglue-sdk-main/include/rex/fault_diagnostics.h"
 #include "theft4_lab_diagnostics.h"
+#include "theft4_crash_evidence.h"
 #import "Theft4FrameTimeView.h"
 #import "Theft4CPUUsageView.h"
 extern int rex_gta4_native_profile_start(void);
@@ -700,6 +701,13 @@ static BOOL Theft4InstallSaveExport(NSURL *selected, NSURL *support, NSURL *docu
 #endif
 @end
 
+// Records the exception with the crash-time memory state before libobjc aborts.
+static void recordUncaughtException(NSException *exception) {
+    NSString *detail = [NSString stringWithFormat:@"name=%@ reason=%@",
+        exception.name ?: @"", exception.reason ?: @""];
+    theft4_crash_evidence_record("uncaught-objc-exception", detail.UTF8String);
+}
+
 static void coreEvent(void *context, const char *event) {
     Theft4ViewController *controller = (__bridge Theft4ViewController *)context;
     [controller record:[NSString stringWithUTF8String:event]];
@@ -1124,6 +1132,10 @@ static void bootEvent(void *context, const char *event) {
         withIntermediateDirectories:YES attributes:nil error:&error]) {
         _failure = error.localizedDescription ?: @"Application Support is unavailable";
     } else {
+        // Written only on allocation failure or termination, so also in Retail Mode.
+        theft4_crash_evidence_install(
+            [_supportURL URLByAppendingPathComponent:@"crash-evidence.txt"].fileSystemRepresentation);
+        NSSetUncaughtExceptionHandler(recordUncaughtException);
         if (!theft4_retail_mode()) {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
         NSURL *faultDirectory = [_supportURL URLByAppendingPathComponent:@"faults" isDirectory:YES];
@@ -2581,6 +2593,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         NSURL *nativeDiagnosticsURL = [[applicationSupport
             URLByAppendingPathComponent:@"LibertyRecomp" isDirectory:YES]
             URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+        // Crash-time memory evidence is tiny and must not lose to the capture budget.
+        success = success && Theft4AppendDiagnosticFile(stream,
+            [supportURL URLByAppendingPathComponent:@"crash-evidence.txt"],
+            @"Theft4/crash-evidence.txt", &budget, included, skipped);
         // Preserve the newest lightweight/stage capture before older deep
         // profiles consume the bounded export budget. The normal enumeration
         // below skips this already-included file, without deleting anything.
