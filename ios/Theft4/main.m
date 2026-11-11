@@ -1135,6 +1135,9 @@ static void bootEvent(void *context, const char *event) {
         // Written only on allocation failure or termination, so also in Retail Mode.
         theft4_crash_evidence_install(
             [_supportURL URLByAppendingPathComponent:@"crash-evidence.txt"].fileSystemRepresentation);
+        // Address space every 15 s, in every mode: the crash comes too late for a capture.
+        theft4_crash_evidence_start_trail(
+            [_supportURL URLByAppendingPathComponent:@"memory-trail.txt"].fileSystemRepresentation);
         NSSetUncaughtExceptionHandler(recordUncaughtException);
         if (!theft4_retail_mode()) {
         _logURL = [_supportURL URLByAppendingPathComponent:@"lifecycle.jsonl"];
@@ -2597,6 +2600,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         success = success && Theft4AppendDiagnosticFile(stream,
             [supportURL URLByAppendingPathComponent:@"crash-evidence.txt"],
             @"Theft4/crash-evidence.txt", &budget, included, skipped);
+        for (NSString *trail in @[@"memory-trail.txt", @"memory-trail.txt.1"])
+            success = success && Theft4AppendDiagnosticFile(stream,
+                [supportURL URLByAppendingPathComponent:trail],
+                [@"Theft4/" stringByAppendingString:trail], &budget, included, skipped);
         // Preserve the newest lightweight/stage capture before older deep
         // profiles consume the bounded export budget. The normal enumeration
         // below skips this already-included file, without deleting anything.

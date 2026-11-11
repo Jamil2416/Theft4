@@ -859,12 +859,12 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
         _pressPoint = (p.x != 0 || p.y != 0) ? p : now - _lastTouchTime < 0.3 ? _lastTouch : CGPointZero;
         _holdFired = NO;
     }
-    // Holding the click opens or closes the menu; a shorter click acts when
-    // it is released.
+    // Holding the click goes back one menu (closing it from the top level); a
+    // shorter click acts when it is released.
     if (clicked && !_holdFired && now - _pressStart >= kHold) {
         _holdFired = YES;
         _lastClickTime = 0;
-        [self setOpen:!_open];
+        if (_open) [self back];
     }
     if (!clicked && _wasClicked && !_holdFired) [self touchpadClickedAt:_pressPoint time:now];
     _wasClicked = clicked;
@@ -872,21 +872,21 @@ static UILabel *MenuLabel(CGFloat size, UIFontWeight weight, BOOL mono) {
 
 // While the menu is open, a click on the top or bottom edge moves the
 // selection, right selects, toggles or raises a value, left goes back or
-// lowers one, and a double-click in the centre returns to the previous menu
-// (closing it at the top level). Edge clicks never count toward a
-// double-click, so they can be repeated quickly.
+// lowers one. A double-click opens the menu from anywhere on the pad and
+// closes it from the centre: while it is open, edge clicks never count toward
+// a double-click, so they can be repeated quickly.
 - (void)touchpadClickedAt:(CGPoint)point time:(CFTimeInterval)now {
     const Theft4PadZone zone = PadZone(point);
     ++_clickCount;
     _lastClickText = [NSString stringWithFormat:@"(%.2f, %.2f) %@", point.x, point.y, PadZoneName(zone)];
-    if (!_open) return;
-    const BOOL centre = zone == Theft4PadCentre;
-    const BOOL doubleClick = centre && now - _lastClickTime < kDoubleClick;
-    _lastClickTime = centre && !doubleClick ? now : 0;
+    const BOOL counts = !_open || zone == Theft4PadCentre;
+    const BOOL doubleClick = counts && now - _lastClickTime < kDoubleClick;
+    _lastClickTime = counts && !doubleClick ? now : 0;
     if (doubleClick) {
-        [self back];
+        [self setOpen:!_open];
         return;
     }
+    if (!_open) return;
     switch (zone) {
         case Theft4PadUp: [self moveSelection:-1]; break;
         case Theft4PadDown: [self moveSelection:1]; break;

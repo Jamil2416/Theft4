@@ -28,5 +28,23 @@ int main() {
   // A line that does not fit is dropped, never written truncated.
   char small[32];
   assert(theft4::crash::FormatEvidence(small, sizeof(small), 1, "terminate", "x", "t", 1, m) == 0);
+  // Address space by owner: largest first, same tag split by kind.
+  theft4::crash::VaMap map;
+  map.free_total = 3 * MiB;
+  map.Add(1, 'a', 2 * MiB);
+  map.Add(0, 'f', 4096 * MiB);
+  map.Add(1, 'a', 6 * MiB);
+  map.Add(1, 'n', 1 * MiB);
+  char owners[256];
+  size_t length = theft4::crash::FormatVaMap(owners, sizeof(owners), map, 2);
+  assert(length == std::strlen(owners));
+  assert(std::string_view(owners) == "free_va_mib=3 owners=3 0f=4096M/1/4194304K 1a=8M/2/6144K");
+  // Buckets that do not fit are left off whole.
+  char tight[40];
+  length = theft4::crash::FormatVaMap(tight, sizeof(tight), map, 3);
+  assert(std::string_view(tight) == "free_va_mib=3 owners=3" && length == std::strlen(tight));
+  // Past 64 owners the rest share the last bucket.
+  for (uint32_t tag = 10; tag < 100; ++tag) map.Add(tag, 'a', MiB);
+  assert(map.used == theft4::crash::VaMap::kBuckets);
   return 0;
 }
