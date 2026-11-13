@@ -5,4 +5,9 @@
          tool can grant it; raises the per-app memory (jetsam) limit, which
          matters most on 8 GiB devices. -->
     <key>com.apple.developer.kernel.increased-memory-limit</key><true/>
+    <!-- Raises the 13.6 GiB address-space limit. The 9-12 Nov crashes on
+         iPad15,3 were bad_alloc with 1-3 MiB of address space left and over
+         3 GiB of RAM to spare (crash-evidence.txt, memory-trail.txt). The
+         memory trail's va_span_mib shows whether the signing tool granted it. -->
+    <key>com.apple.developer.kernel.extended-virtual-addressing</key><true/>
 </dict></plist>

@@ -204,27 +204,37 @@ static BOOL Theft4AppendDiagnosticFile(NSOutputStream *stream, NSURL *url, NSStr
         directory) return YES;
     NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:nil];
     unsigned long long fileSize = [attributes fileSize];
-    if (fileSize > *budget) {
+    NSString *header = [NSString stringWithFormat:@"\n\n===== %@ (%llu bytes) =====\n",
+                        label, fileSize];
+    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
+    if (!headerData) return NO;
+    // The header counts too: a file that fit only without it used to fail
+    // the whole export instead of being skipped.
+    if (fileSize > *budget || headerData.length > *budget - fileSize) {
         [skipped addObject:[NSString stringWithFormat:@"%@ (%llu bytes; export budget exceeded)",
                              label, fileSize]];
         return YES;
     }
-    NSString *header = [NSString stringWithFormat:@"\n\n===== %@ (%llu bytes) =====\n",
-                        label, fileSize];
-    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
-    if (!headerData || headerData.length > *budget ||
-        !Theft4WriteBytes(stream, headerData.bytes, headerData.length, budget)) return NO;
+    if (!Theft4WriteBytes(stream, headerData.bytes, headerData.length, budget)) return NO;
     NSInputStream *input = [NSInputStream inputStreamWithURL:url];
     [input open];
     uint8_t buffer[64 * 1024];
     BOOL success = YES;
-    while (success) {
-        NSInteger count = [input read:buffer maxLength:sizeof(buffer)];
+    // Copy only the size checked above: files still being written (the memory
+    // trail appends every 15 s) must not run past the budget.
+    unsigned long long remaining = fileSize;
+    while (success && remaining) {
+        NSInteger count = [input read:buffer
+                            maxLength:(NSUInteger)MIN((unsigned long long)sizeof(buffer), remaining)];
         if (count < 0) { success = NO; break; }
         if (count == 0) break;
+        remaining -= (unsigned long long)count;
         success = Theft4WriteBytes(stream, buffer, (NSUInteger)count, budget);
     }
     [input close];
+    if (!success)
+        [skipped addObject:[NSString stringWithFormat:@"%@ (read or write failed: %@)", label,
+            (input.streamError ?: stream.streamError).localizedDescription ?: @"no error given"]];
     if (success) [included addObject:label];
     return success;
 }
@@ -2720,8 +2730,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 (unsigned long)included.count, [included componentsJoinedByString:@"\n"],
                 (unsigned long)skipped.count, [skipped componentsJoinedByString:@"\n"],
                 (unsigned long)budget];
-            success = Theft4WriteString(stream, manifest, &budget);
+            // The files fill the budget as closely as they can, so whatever
+            // is left can be smaller than this list (it was 80 KB on 12 Nov
+            // with a 9 KB manifest). The manifest is never budget-limited.
+            NSUInteger manifestBudget = NSUIntegerMax;
+            success = Theft4WriteString(stream, manifest, &manifestBudget);
         }
+        NSString *failure = success ? nil : (skipped.lastObject ?: @"the output file could not be written");
+        if (!success && stream.streamError)
+            failure = [NSString stringWithFormat:@"%@ (%@)", failure, stream.streamError.localizedDescription];
         [stream close];
 
         if (!success) {
@@ -2730,7 +2747,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                 if (!share) { [self showCaptureNotice:@"The capture could not be saved to Files."]; return; }
                 self->_downloadLogButton.enabled = YES;
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LOG EXPORT FAILED"
-                    message:@"The diagnostic bundle could not be written."
+                    message:[NSString stringWithFormat:@"The diagnostic bundle could not be written: %@", failure]
                     preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"OK"
                     style:UIAlertActionStyleDefault handler:nil]];

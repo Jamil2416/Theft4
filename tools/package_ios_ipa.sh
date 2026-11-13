@@ -136,6 +136,10 @@ if [[ "${THEFT4_IPA_INCREASED_MEMORY:-1}" != 0 ]]; then
     print -u2 "The ad-hoc signature does not carry the increased memory limit request."
     exit 70
   fi
+  if [[ "$signed_entitlements" != *com.apple.developer.kernel.extended-virtual-addressing* ]]; then
+    print -u2 "The ad-hoc signature does not carry the extended virtual addressing request."
+    exit 70
+  fi
   signature_details="$(/usr/bin/codesign -dv "$staged_app" 2>&1 || true)"
   if [[ "$signature_details" != *$'\n'TeamIdentifier=not\ set* ]]; then
     print -u2 "The staged app signature unexpectedly names a development team."
@@ -145,7 +149,7 @@ if [[ "${THEFT4_IPA_INCREASED_MEMORY:-1}" != 0 ]]; then
     print -u2 "Ad-hoc signing unexpectedly added a provisioning profile."
     exit 70
   fi
-  signing_summary="ad-hoc, requests increased-memory-limit; the user's sideloading tool must re-sign the app"
+  signing_summary="ad-hoc, requests increased-memory-limit and extended-virtual-addressing; the user's sideloading tool must re-sign the app"
 fi
 
 (

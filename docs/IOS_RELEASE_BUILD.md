@@ -113,6 +113,14 @@ and the packager fails if one appears. The headroom matters most on 8 GiB
 devices such as the M3 iPad Air; whether it applies depends on the signing tool (AltStore
 2.2 or later grants it to free accounts). Compare **Available process memory
 at export** in **System → Download Latest Log Capture** to confirm it.
+
+It also requests `com.apple.developer.kernel.extended-virtual-addressing`.
+Without it the app's address space ends at about 13.6 GiB on iPad15,3: the
+shared cache takes 5.5 GiB and the game's mapped files 5.3 GiB, leaving about
+800 MiB once the game has loaded, and the 9-12 Nov crashes were `bad_alloc`
+with 1-3 MiB of address space left and over 3 GiB of RAM free. The `launch`
+line of `Theft4/memory-trail.txt` in the same capture gives `va_span_mib`,
+which shows whether the signing tool granted it.
 `THEFT4_IPA_INCREASED_MEMORY=0` restores the previous signature-free package.
 
 The build entry points record the source commit in `Theft4SourceRevision`.

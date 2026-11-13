@@ -201,6 +201,9 @@ jobs:
           if [[ "$entitlements" != *com.apple.developer.kernel.increased-memory-limit* ]]; then
             echo "::error::increased-memory-limit request missing"; exit 1
           fi
+          if [[ "$entitlements" != *com.apple.developer.kernel.extended-virtual-addressing* ]]; then
+            echo "::error::extended-virtual-addressing request missing"; exit 1
+          fi
           signature="$(codesign -dv "$app" 2>&1 || true)"
           echo "$signature" | grep -E '^(Identifier|Signature|TeamIdentifier)=' || true
           if [[ "$signature" != *$'\n'TeamIdentifier=not\ set* ]]; then

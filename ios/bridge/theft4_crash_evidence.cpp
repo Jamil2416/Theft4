@@ -13,6 +13,7 @@
 #include <exception>
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <malloc/malloc.h>
 #include <new>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -113,10 +114,18 @@ void* TrailMain(void*) {
   for (unsigned sample = 0; sample < kMaxTrailSamples; ++sample) {
     theft4::crash::VaMap map;
     const theft4::crash::MemoryState state = Sample(&map);
-    char owners[768], line[1280];
-    if (theft4::crash::FormatVaMap(owners, sizeof(owners), map, 12))
+    // malloc's own totals over all zones: bytes handed out vs bytes the zones
+    // hold. A gap that keeps widening is fragmentation; both rising together
+    // is memory the app keeps (12 Nov: malloc's small regions grew to 1.5 GiB).
+    malloc_statistics_t stats{};
+    malloc_zone_statistics(nullptr, &stats);
+    char owners[768], detail[900], line[1400];
+    if (theft4::crash::FormatVaMap(owners, sizeof(owners), map, 12)) {
+      std::snprintf(detail, sizeof(detail), "%s malloc_in_use_mib=%llu malloc_held_mib=%llu", owners,
+          (unsigned long long)(stats.size_in_use >> 20), (unsigned long long)(stats.size_allocated >> 20));
       Append(g_trail_path, line, theft4::crash::FormatEvidence(line, sizeof(line),
-          uint64_t(time(nullptr)), sample ? "sample" : "launch", owners, "trail", sample + 1, state));
+          uint64_t(time(nullptr)), sample ? "sample" : "launch", detail, "trail", sample + 1, state));
+    }
     sleep(15);
   }
   return nullptr;
