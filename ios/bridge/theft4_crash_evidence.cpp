@@ -119,8 +119,8 @@ void AppendCaches(char* detail, size_t capacity, size_t length, bool names) {
       length += size_t(n);
     }
   }
-  uint64_t v[32];
-  const uint32_t count = values(v, 32);
+  uint64_t v[64];
+  const uint32_t count = values(v, 64);
   const size_t start = length;
   for (uint32_t i = 0; i < count; ++i) {
     const int n = std::snprintf(detail + length, capacity - length, i ? ",%llu" : " caches=%llu",
@@ -143,7 +143,7 @@ void* TrailMain(void*) {
     // is memory the app keeps (12 Nov: malloc's small regions grew to 1.5 GiB).
     malloc_statistics_t stats{};
     malloc_zone_statistics(nullptr, &stats);
-    char owners[768], detail[1800], line[2300];
+    char owners[768], detail[2600], line[3100];
     if (theft4::crash::FormatVaMap(owners, sizeof(owners), map, 12)) {
       int n = std::snprintf(detail, sizeof(detail), "%s malloc_in_use_mib=%llu malloc_held_mib=%llu", owners,
           (unsigned long long)(stats.size_in_use >> 20), (unsigned long long)(stats.size_allocated >> 20));

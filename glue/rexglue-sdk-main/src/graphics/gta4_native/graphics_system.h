@@ -340,6 +340,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::vector<MipLevel> mip_levels;
     NativeTextureOrigin origin = NativeTextureOrigin::kGuestSnapshot;
     uint64_t virtual_lifetime = 0;
+    // Title frame of the last draw that bound this texture (or its creation).
+    mutable std::atomic<uint32_t> last_used_frame{0};
     bool gpu_produced = false;
     std::shared_ptr<const NativeTextureResource> packed_depth_source;
     bool vector_font_replacement = false;

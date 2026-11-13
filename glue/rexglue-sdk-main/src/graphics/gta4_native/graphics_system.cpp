@@ -782,15 +782,31 @@ enum : uint32_t {
   Presents, MetalLibraries, MetalFunctions, MetalPipelines, ArchiveAdds,
   FrameTextures, PendingTextureRetirements, FrameImages, FrameImageMiB,
   FrameBuffers, FrameBufferMiB, FramePipelineTemplates, VertexConversions,
-  BufferResources, TextureResources, ShaderResources, SnapshotLiveMiB, Count
+  BufferResources, TextureResources, ShaderResources, SnapshotLiveMiB,
+  // Cumulative texture-copy lifecycle (producer thread).
+  TexCreatedGuest, TexReplacedGuest, TexCreatedGpu, TexReplacedGpu, TexInvalidated,
+  ReleaseRequests, ReleaseTextureHits, ReleaseTextureShared, ReleaseBufferHits, ReleaseMisses,
+  // Snapshot of the texture-copy table (render worker, try_lock).
+  TexGuest, TexGuestMiB, TexGpu, TexGpuMiB, TexExclusiveGuest, TexExclusiveGuestMiB,
+  TexIdle10s, TexIdle10sMiB, TexIdle60s, TexIdle60sMiB, TexIdle300s, TexIdle300sMiB,
+  TexDirtyHandles, TexFontReplacements, TexFrame, Count
 };
 constexpr const char* kNames =
     "presents,metal_libraries,metal_functions,metal_pipelines,archive_adds,"
     "frame_textures,pending_texture_retirements,frame_images,frame_image_mib,"
     "frame_buffers,frame_buffer_mib,frame_pipeline_templates,vertex_conversions,"
-    "buffer_resources,texture_resources,shader_resources,snapshot_live_mib";
+    "buffer_resources,texture_resources,shader_resources,snapshot_live_mib,"
+    "tex_created_guest,tex_replaced_guest,tex_created_gpu,tex_replaced_gpu,tex_invalidated,"
+    "release_requests,release_texture_hits,release_texture_shared,release_buffer_hits,release_misses,"
+    "tex_guest,tex_guest_mib,tex_gpu,tex_gpu_mib,tex_exclusive_guest,tex_exclusive_guest_mib,"
+    "tex_idle10s,tex_idle10s_mib,tex_idle60s,tex_idle60s_mib,tex_idle300s,tex_idle300s_mib,"
+    "tex_dirty_handles,tex_font_replacements,tex_frame";
 std::array<std::atomic<uint64_t>, Count> values{};
 void Set(uint32_t field, uint64_t value) { values[field].store(value, std::memory_order_relaxed); }
+void Add(uint32_t field) { values[field].fetch_add(1, std::memory_order_relaxed); }
+void CountTexture(bool gpu, bool replacing) {
+  Add(gpu ? (replacing ? TexReplacedGpu : TexCreatedGpu) : (replacing ? TexReplacedGuest : TexCreatedGuest));
+}
 }  // namespace cache_stats
 extern "C" uint32_t rex_gta4_cache_stats(uint64_t* out, uint32_t capacity) {
   const uint32_t n = std::min<uint32_t>(capacity, cache_stats::Count);
@@ -5178,6 +5194,7 @@ void Gta4NativeGraphicsSystem::InvalidateCapturedTextureResourceLocked(uint32_t 
     superseded_texture_release_generations_.insert(captured->second->generation);
   }
   texture_resources_.erase(captured);
+  cache_stats::Add(cache_stats::TexInvalidated);
 }
 
 bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_t command_size,
@@ -5440,6 +5457,7 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       std::lock_guard lock(texture_resource_mutex_);
       const auto texture = texture_resources_.find(release.resource);
       if (texture != texture_resources_.end() && texture->second) {
+        if (texture->second.use_count() > 1) cache_stats::Add(cache_stats::ReleaseTextureShared);
         released_texture_generation = texture->second->generation;
         released_texture_logical_bytes = texture->second->payload.size();
         released_texture_retained_bytes = texture->second->payload.capacity();
@@ -5469,6 +5487,10 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       dirty_buffer_handles_.erase(release.resource);
       remaining_buffers = buffer_resources_.size();
     }
+    cache_stats::Add(cache_stats::ReleaseRequests);
+    if (erased_texture) cache_stats::Add(cache_stats::ReleaseTextureHits);
+    if (erased_buffer) cache_stats::Add(cache_stats::ReleaseBufferHits);
+    if (!erased_texture && !erased_buffer) cache_stats::Add(cache_stats::ReleaseMisses);
     native_command.released_texture_generation = released_texture_generation;
     if (erased_texture) {
       RecordNativeMemoryLifecycle(
@@ -5922,7 +5944,9 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
       const uint32_t handle =
           LoadGuestWord(device_state, kTextureHandleBase + stage * sizeof(uint32_t));
       if (handle) {
-        CaptureRecordResource(native_command, native_command.textures[stage], CaptureTextureResource(handle, fetch, stage));
+        auto bound_texture = CaptureTextureResource(handle, fetch, stage);
+        if (bound_texture) bound_texture->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        CaptureRecordResource(native_command, native_command.textures[stage], bound_texture);
       }
     };
     if (REXCVAR_GET(gta4_native_sparse_texture_walks)) {
@@ -6042,6 +6066,8 @@ Gta4NativeGraphicsSystem::CreateResolvedTextureResource(const ResolveCommand& co
   }
   const bool replacing = superseded != texture_resources_.end() && superseded->second;
   texture_resources_[command.destination_texture] = resource;
+  resource->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  cache_stats::CountTexture(true, replacing);
   dirty_texture_handles_.erase(command.destination_texture);
   virtual_resource_registry_.PublishHostWrite(command.destination_texture);
   if (virtual_lifetime &&
@@ -6416,6 +6442,8 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
           superseded_texture_release_generations_.insert(resource->generation);
         }
         texture_resources_[handle] = alias;
+        alias->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        cache_stats::CountTexture(true, resource != nullptr);
         dirty_texture_handles_.erase(handle);
         REXLOG_INFO("gta4-native-virtual-resource: point=packed-depth-alias-publish "
                     "handle={:08X}@{} source={:08X}@{} lifetime={} logical={}x{}",
@@ -6455,6 +6483,8 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
         }
         const bool replacing = resource != nullptr;
         texture_resources_[handle] = deterministic;
+        deterministic->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        cache_stats::CountTexture(true, replacing);
         dirty_texture_handles_.erase(handle);
         virtual_resource_registry_.PublishHostWrite(handle);
         RecordNativeMemoryLifecycle(
@@ -7048,6 +7078,8 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   }
   const bool replacing = existing != texture_resources_.end() && existing->second;
   texture_resources_[handle] = resource;
+  resource->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  cache_stats::CountTexture(resource->gpu_produced, replacing);
   dirty_texture_handles_.erase(handle);
   RecordNativeMemoryLifecycle(
       memory::ResourceKind::kTextureResource,
@@ -36394,8 +36426,37 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
 #endif
       if (std::unique_lock lock(buffer_resource_mutex_, std::try_to_lock); lock.owns_lock())
         cs::Set(cs::BufferResources, buffer_resources_.size());
-      if (std::unique_lock lock(texture_resource_mutex_, std::try_to_lock); lock.owns_lock())
+      if (std::unique_lock lock(texture_resource_mutex_, std::try_to_lock); lock.owns_lock()) {
         cs::Set(cs::TextureResources, texture_resources_.size());
+        // What a Metal sweep of idle, exclusively owned guest copies could
+        // free, by idle time (30 fps title frames). Read-only walk.
+        const uint32_t now = g_native_memory_profile_event_frame.load(std::memory_order_relaxed);
+        uint64_t guest = 0, guest_bytes = 0, gpu = 0, gpu_bytes = 0, exclusive = 0, exclusive_bytes = 0;
+        uint64_t idle[3] = {}, idle_bytes[3] = {}, fonts = 0;
+        constexpr uint32_t kIdleFrames[3] = {300, 1800, 9000};
+        for (const auto& entry : texture_resources_) {
+          const auto& resource = entry.second;
+          if (!resource) continue;
+          const uint64_t bytes = resource->payload.capacity();
+          if (resource->vector_font_replacement) ++fonts;
+          if (resource->gpu_produced) { ++gpu; gpu_bytes += bytes; continue; }
+          ++guest; guest_bytes += bytes;
+          if (resource.use_count() != 1) continue;
+          ++exclusive; exclusive_bytes += bytes;
+          const uint32_t idle_frames = now - resource->last_used_frame.load(std::memory_order_relaxed);
+          for (int k = 0; k < 3; ++k)
+            if (idle_frames >= kIdleFrames[k]) { ++idle[k]; idle_bytes[k] += bytes; }
+        }
+        cs::Set(cs::TexGuest, guest); cs::Set(cs::TexGuestMiB, guest_bytes >> 20);
+        cs::Set(cs::TexGpu, gpu); cs::Set(cs::TexGpuMiB, gpu_bytes >> 20);
+        cs::Set(cs::TexExclusiveGuest, exclusive); cs::Set(cs::TexExclusiveGuestMiB, exclusive_bytes >> 20);
+        cs::Set(cs::TexIdle10s, idle[0]); cs::Set(cs::TexIdle10sMiB, idle_bytes[0] >> 20);
+        cs::Set(cs::TexIdle60s, idle[1]); cs::Set(cs::TexIdle60sMiB, idle_bytes[1] >> 20);
+        cs::Set(cs::TexIdle300s, idle[2]); cs::Set(cs::TexIdle300sMiB, idle_bytes[2] >> 20);
+        cs::Set(cs::TexDirtyHandles, dirty_texture_handles_.size());
+        cs::Set(cs::TexFontReplacements, fonts);
+        cs::Set(cs::TexFrame, now);
+      }
       cs::Set(cs::ShaderResources, shader_resources_.size());
       cs::Set(cs::SnapshotLiveMiB, pipeline_snapshot_pages_.live_bytes() >> 20);
     }
