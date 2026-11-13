@@ -45,6 +45,12 @@ uint64_t rex_gta4_light_capture_start(void);
 void rex_gta4_light_capture_stop(void);
 void rex_gta4_light_memory_warning(void);
 uint64_t rex_gta4_light_capture_frequency(void);
+// Diagnostic cache sizes, published by the render worker on the first title
+// present and every 450 after (about 15 s at 30 fps). Any thread may read
+// them; nothing is locked. Returns the number of values written.
+uint32_t rex_gta4_cache_stats(uint64_t *out, uint32_t capacity);
+// Comma-separated names of those values, in order.
+const char *rex_gta4_cache_stat_names(void);
 uint32_t rex_gta4_light_capture_read(uint64_t *cursor, rex_light_sample *out,
                                     uint32_t capacity, uint64_t *lost);
 #ifdef __cplusplus

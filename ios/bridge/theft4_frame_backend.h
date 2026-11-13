@@ -22,6 +22,10 @@ struct ColorReadback {
   uint64_t row_bytes=0;
   std::vector<uint8_t> bytes;
 };
+// Diagnostic cache sizes for the memory trail (render worker only).
+struct BackendCacheCounts {
+  uint64_t libraries=0,functions=0,pipelines=0,archive_adds=0;
+};
 class FrameBackend {
  public:
   virtual ~FrameBackend()=default;
@@ -39,6 +43,7 @@ class FrameBackend {
                       SurfaceContents* published=nullptr)=0;
   virtual bool Drain(std::string& error)=0;
   virtual void Close()=0;
+  virtual BackendCacheCounts CacheCounts() const { return {}; }
   // Explicit guest/validation readback only; never called by normal publication.
   virtual bool ReadRGBA8(const FramePlan&,SurfaceView,std::vector<uint8_t>&,
                         std::string& error)=0;

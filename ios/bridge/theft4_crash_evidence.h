@@ -20,6 +20,10 @@ void theft4_crash_evidence_record(const char* event, const char* detail);
 // address space with RAM to spare, 8-35 minutes in, past any capture). A file
 // over 512 KB is first renamed to "<path>.1". Call once at launch.
 void theft4_crash_evidence_start_trail(const char* path);
+// Diagnostic: each trail sample appends " caches=<values>" read from `values`
+// (and the launch sample " cache_fields=<names>"). Call before starting the trail.
+void theft4_crash_evidence_set_cache_probe(const char* (*names)(void),
+                                           uint32_t (*values)(uint64_t* out, uint32_t capacity));
 #ifdef __cplusplus
 }
 

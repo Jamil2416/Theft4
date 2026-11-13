@@ -1146,6 +1146,8 @@ static void bootEvent(void *context, const char *event) {
         theft4_crash_evidence_install(
             [_supportURL URLByAppendingPathComponent:@"crash-evidence.txt"].fileSystemRepresentation);
         // Address space every 15 s, in every mode: the crash comes too late for a capture.
+        // Diagnostic: renderer cache sizes ride along on each sample.
+        theft4_crash_evidence_set_cache_probe(rex_gta4_cache_stat_names, rex_gta4_cache_stats);
         theft4_crash_evidence_start_trail(
             [_supportURL URLByAppendingPathComponent:@"memory-trail.txt"].fileSystemRepresentation);
         NSSetUncaughtExceptionHandler(recordUncaughtException);

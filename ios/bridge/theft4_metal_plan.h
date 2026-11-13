@@ -31,6 +31,8 @@ class PlanAdapter {
   render::IndexRangeCache& IndexRanges() { return index_ranges_; }
   size_t PipelineCount() const { return render_pipelines_.size(); }
   size_t SamplerCount() const { return samplers_.size(); }
+  size_t LoadedLibraries() const { return shaders_.LoadedLibraries(); }
+  size_t LoadedFunctions() const { return shaders_.LoadedFunctions(); }
   ResourceCacheStats ResourceStats() const {
     auto stats=resources_.Stats();stats.prepared_view_hits=prepared_view_hits_;
     stats.prepared_view_misses=prepared_view_misses_;return stats;

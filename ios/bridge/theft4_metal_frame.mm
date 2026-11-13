@@ -567,4 +567,6 @@ ResourceCacheStats FrameAdapter::ImmutableStats() const {
   auto stats=impl_->draws.ResourceStats();impl_->uploads.AddStats(stats);return stats;
 }
 size_t FrameAdapter::PipelineCount() const{return impl_->draws.PipelineCount()+impl_->host_pipelines.size();}
+size_t FrameAdapter::LoadedLibraries() const{return impl_->draws.LoadedLibraries();}
+size_t FrameAdapter::LoadedFunctions() const{return impl_->draws.LoadedFunctions();}
 }

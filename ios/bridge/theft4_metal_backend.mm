@@ -35,6 +35,13 @@ class Backend final:public render::FrameBackend {
   ~Backend() override { Close(); }
   render::BackendCapabilities Capabilities() const override{return caps_;}
   bool HasPresentation() const override{return layer_!=nil;}
+  render::BackendCacheCounts CacheCounts() const override {
+    render::BackendCacheCounts counts;
+    if(!renderer_||!adapter_||worker_!=std::this_thread::get_id())return counts;
+    counts.libraries=adapter_->LoadedLibraries();counts.functions=adapter_->LoadedFunctions();
+    counts.pipelines=adapter_->PipelineCount();counts.archive_adds=renderer_->PipelineArchiveAdds();
+    return counts;
+  }
   bool Open(std::string& error) override {
     if(renderer_)return Worker(error);
     if(open_attempted_){error="Metal backend cannot reopen after failure or close";return false;}

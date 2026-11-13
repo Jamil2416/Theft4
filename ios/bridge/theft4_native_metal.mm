@@ -51,7 +51,7 @@ NSUInteger FormatBytes(MTLVertexFormat f) {
 struct Renderer::Impl {
   PipelineCompilationStats compilation;
   id<MTLBinaryArchive> archive=nil;
-  NSURL* archive_url=nil;bool archive_dirty=false;uint64_t archive_hits=0;
+  NSURL* archive_url=nil;bool archive_dirty=false;uint64_t archive_hits=0,archive_adds=0;
   struct ClearKey {
     std::array<MTLPixelFormat,6> formats{};
     NSUInteger samples=1;
@@ -101,7 +101,7 @@ id<MTLRenderPipelineState> Renderer::Impl::BuildState(MTLRenderPipelineDescripto
       // Compile the missing functions into the archive once. No disk IO is
       // performed during drawing; persist only when the backend is drained.
       CompilationTimer timer(compilation.archive_ms);
-      e=nil;if([archive addRenderPipelineFunctionsWithDescriptor:desc error:&e])archive_dirty=true;
+      e=nil;if([archive addRenderPipelineFunctionsWithDescriptor:desc error:&e]){archive_dirty=true;++archive_adds;}
     }
   }
   if(!state){CompilationTimer timer(compilation.pipeline_ms);e=nil;state=[device newRenderPipelineStateWithDescriptor:desc error:&e];}
@@ -430,6 +430,7 @@ void Renderer::FlushPipelineArchive() {
   }
 }
 uint64_t Renderer::PipelineArchiveHits() const{return impl_->archive_hits;}
+uint64_t Renderer::PipelineArchiveAdds() const{return impl_->archive_adds;}
 bool Renderer::PipelineArchiveNeedsFlush() const{return impl_->archive_dirty;}
 size_t Renderer::PreparedClearCount() const{return impl_->clears.size();}
 PipelineCompilationStats Renderer::CompilationStats() const{return impl_->compilation;}

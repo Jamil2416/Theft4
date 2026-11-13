@@ -29,6 +29,8 @@ namespace {
 // buffers and syscalls only.
 char g_path[1024];
 char g_trail_path[1024];
+std::atomic<const char* (*)(void)> g_cache_names{nullptr};
+std::atomic<uint32_t (*)(uint64_t*, uint32_t)> g_cache_values{nullptr};
 std::atomic<uint64_t> g_sequence{0};
 std::atomic<unsigned> g_new_failures{0};
 std::terminate_handler g_previous_terminate = nullptr;
@@ -106,10 +108,32 @@ void Write(const char* event, const char* detail) {
       ++g_sequence, state));
 }
 
+// Diagnostic cache sizes from the renderer, when the app registered them.
+void AppendCaches(char* detail, size_t capacity, size_t length, bool names) {
+  const auto values = g_cache_values.load(std::memory_order_acquire);
+  if (!values || length >= capacity) return;
+  if (names) {
+    if (const auto name_fn = g_cache_names.load(std::memory_order_acquire)) {
+      const int n = std::snprintf(detail + length, capacity - length, " cache_fields=%s", name_fn());
+      if (n <= 0 || size_t(n) >= capacity - length) { detail[length] = 0; return; }
+      length += size_t(n);
+    }
+  }
+  uint64_t v[32];
+  const uint32_t count = values(v, 32);
+  const size_t start = length;
+  for (uint32_t i = 0; i < count; ++i) {
+    const int n = std::snprintf(detail + length, capacity - length, i ? ",%llu" : " caches=%llu",
+                                (unsigned long long)v[i]);
+    if (n <= 0 || size_t(n) >= capacity - length) { detail[start] = 0; return; }
+    length += size_t(n);
+  }
+}
+
 void* TrailMain(void*) {
   pthread_setname_np("Theft4 memory trail");
   pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-  // 15 s apart: about 110 KB an hour, and the walk is a few thousand cheap
+  // 15 s apart: about 220 KB an hour, and the walk is a few thousand cheap
   // kernel calls. Stops after 12 hours so one session cannot fill the disk.
   for (unsigned sample = 0; sample < kMaxTrailSamples; ++sample) {
     theft4::crash::VaMap map;
@@ -119,10 +143,11 @@ void* TrailMain(void*) {
     // is memory the app keeps (12 Nov: malloc's small regions grew to 1.5 GiB).
     malloc_statistics_t stats{};
     malloc_zone_statistics(nullptr, &stats);
-    char owners[768], detail[900], line[1400];
+    char owners[768], detail[1800], line[2300];
     if (theft4::crash::FormatVaMap(owners, sizeof(owners), map, 12)) {
-      std::snprintf(detail, sizeof(detail), "%s malloc_in_use_mib=%llu malloc_held_mib=%llu", owners,
+      int n = std::snprintf(detail, sizeof(detail), "%s malloc_in_use_mib=%llu malloc_held_mib=%llu", owners,
           (unsigned long long)(stats.size_in_use >> 20), (unsigned long long)(stats.size_allocated >> 20));
+      AppendCaches(detail, sizeof(detail), n > 0 ? size_t(n) : sizeof(detail), sample == 0);
       Append(g_trail_path, line, theft4::crash::FormatEvidence(line, sizeof(line),
           uint64_t(time(nullptr)), sample ? "sample" : "launch", detail, "trail", sample + 1, state));
     }
@@ -175,6 +200,12 @@ extern "C" void theft4_crash_evidence_record(const char* event, const char* deta
   Write(event, detail);
 }
 
+extern "C" void theft4_crash_evidence_set_cache_probe(const char* (*names)(void),
+                                                      uint32_t (*values)(uint64_t*, uint32_t)) {
+  g_cache_names.store(names, std::memory_order_release);
+  g_cache_values.store(values, std::memory_order_release);
+}
+
 extern "C" void theft4_crash_evidence_start_trail(const char* path) {
   if (!path || g_trail_path[0]) return;
   const size_t length = std::strlen(path);
@@ -194,4 +225,6 @@ extern "C" void theft4_crash_evidence_start_trail(const char* path) {
 extern "C" void theft4_crash_evidence_install(const char*) {}
 extern "C" void theft4_crash_evidence_record(const char*, const char*) {}
 extern "C" void theft4_crash_evidence_start_trail(const char*) {}
+extern "C" void theft4_crash_evidence_set_cache_probe(const char* (*)(void),
+                                                      uint32_t (*)(uint64_t*, uint32_t)) {}
 #endif

@@ -44,6 +44,8 @@ class FrameAdapter {
   FrameResourceStats Stats() const;
   ResourceCacheStats ImmutableStats() const;
   size_t PipelineCount() const;
+  size_t LoadedLibraries() const;
+  size_t LoadedFunctions() const;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

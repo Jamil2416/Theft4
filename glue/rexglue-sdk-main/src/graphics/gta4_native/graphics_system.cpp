@@ -775,6 +775,29 @@ extern "C" void rex_gta4_light_capture_stop() {
   rex::diagnostics::runtime_probe::enabled.store(false, std::memory_order_release);
 }
 extern "C" uint64_t rex_gta4_light_capture_frequency() { return rex::chrono::Clock::QueryHostTickFrequency(); }
+namespace cache_stats {
+// Diagnostic only (memory trail): which renderer cache grows during play.
+// Written by the render worker in PublishFrame, read by any thread.
+enum : uint32_t {
+  Presents, MetalLibraries, MetalFunctions, MetalPipelines, ArchiveAdds,
+  FrameTextures, PendingTextureRetirements, FrameImages, FrameImageMiB,
+  FrameBuffers, FrameBufferMiB, FramePipelineTemplates, VertexConversions,
+  BufferResources, TextureResources, ShaderResources, SnapshotLiveMiB, Count
+};
+constexpr const char* kNames =
+    "presents,metal_libraries,metal_functions,metal_pipelines,archive_adds,"
+    "frame_textures,pending_texture_retirements,frame_images,frame_image_mib,"
+    "frame_buffers,frame_buffer_mib,frame_pipeline_templates,vertex_conversions,"
+    "buffer_resources,texture_resources,shader_resources,snapshot_live_mib";
+std::array<std::atomic<uint64_t>, Count> values{};
+void Set(uint32_t field, uint64_t value) { values[field].store(value, std::memory_order_relaxed); }
+}  // namespace cache_stats
+extern "C" uint32_t rex_gta4_cache_stats(uint64_t* out, uint32_t capacity) {
+  const uint32_t n = std::min<uint32_t>(capacity, cache_stats::Count);
+  for (uint32_t i = 0; i < n; ++i) out[i] = cache_stats::values[i].load(std::memory_order_relaxed);
+  return n;
+}
+extern "C" const char* rex_gta4_cache_stat_names() { return cache_stats::kNames; }
 extern "C" void rex_gta4_light_capture_write_fault_snapshot(int fd) {
 #if defined(__APPLE__)
   static std::atomic_flag writing = ATOMIC_FLAG_INIT;
@@ -36345,6 +36368,38 @@ bool Gta4NativeGraphicsSystem::PublishFrame(
 #ifdef THEFT4_DIRECT_METAL_BACKEND
   if (frame_backend_) capture_images = native_metal_frame_ ? native_metal_frame_->textures.size() + native_metal_frame_->images.size() : 0;
 #endif
+  // Diagnostic cache sizes for the memory trail. Reads only; the resource
+  // maps are sampled with try_lock so this never waits on, or reorders, a
+  // lock another thread holds (a busy map keeps its previous value).
+  if (present.device) {
+    static uint64_t title_presents = 0;  // PublishFrame runs on the render worker only.
+    if (title_presents++ % 450 == 0) {
+      namespace cs = cache_stats;
+      cs::Set(cs::Presents, title_presents);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+      if (frame_backend_) {
+        const auto counts = frame_backend_->CacheCounts();
+        cs::Set(cs::MetalLibraries, counts.libraries); cs::Set(cs::MetalFunctions, counts.functions);
+        cs::Set(cs::MetalPipelines, counts.pipelines); cs::Set(cs::ArchiveAdds, counts.archive_adds);
+      }
+      if (native_metal_frame_) {
+        const auto& frame = *native_metal_frame_;
+        cs::Set(cs::FrameTextures, frame.textures.size());
+        cs::Set(cs::PendingTextureRetirements, frame.pending_texture_generations.size());
+        cs::Set(cs::FrameImages, frame.images.size()); cs::Set(cs::FrameImageMiB, frame.images.bytes() >> 20);
+        cs::Set(cs::FrameBuffers, frame.buffers.size()); cs::Set(cs::FrameBufferMiB, frame.buffers.bytes() >> 20);
+        cs::Set(cs::FramePipelineTemplates, frame.pipelines.size());
+        cs::Set(cs::VertexConversions, frame.vertex_conversions.size());
+      }
+#endif
+      if (std::unique_lock lock(buffer_resource_mutex_, std::try_to_lock); lock.owns_lock())
+        cs::Set(cs::BufferResources, buffer_resources_.size());
+      if (std::unique_lock lock(texture_resource_mutex_, std::try_to_lock); lock.owns_lock())
+        cs::Set(cs::TextureResources, texture_resources_.size());
+      cs::Set(cs::ShaderResources, shader_resources_.size());
+      cs::Set(cs::SnapshotLiveMiB, pipeline_snapshot_pages_.live_bytes() >> 20);
+    }
+  }
   light::FrameScope light_frame(present.device != 0, present.submitted_frame,
       current_frame_.size(), capture_images,
       host_activity_epoch_.load(std::memory_order_relaxed));

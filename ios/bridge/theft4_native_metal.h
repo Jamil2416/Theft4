@@ -173,6 +173,7 @@ class Renderer {
   void ConfigurePipelineArchive(const std::string& path);
   void FlushPipelineArchive();
   uint64_t PipelineArchiveHits() const;
+  uint64_t PipelineArchiveAdds() const;
   bool PipelineArchiveNeedsFlush() const;
   size_t PreparedClearCount() const;
   PipelineCompilationStats CompilationStats() const;
