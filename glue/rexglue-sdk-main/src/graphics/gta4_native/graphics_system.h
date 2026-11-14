@@ -1641,6 +1641,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   void ReleaseUnusedBufferResources(uint32_t submitted_frame);
 #ifdef THEFT4_DIRECT_METAL_BACKEND
   void ReleaseUnusedMetalBufferResources(uint32_t submitted_frame);
+  void ReleaseUnusedMetalTextureResources(uint32_t submitted_frame);
 #endif
   template <typename Visitor>
   static void VisitProtectedTextureGenerations(const NativeCommand& command, Visitor&& visit) {
@@ -2071,6 +2072,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint64_t next_buffer_generation_ = 1;
   std::mutex texture_resource_mutex_;
   std::unordered_map<uint32_t, std::shared_ptr<const NativeTextureResource>> texture_resources_;
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  // Guest-snapshot copies the Metal texture sweep visits (texture_resource_mutex_).
+  NativeGeometryRetirement metal_texture_retirement_;
+  uint64_t reclaimed_texture_bytes_ = 0;  // Render worker only (diagnostic).
+#endif
   std::unordered_set<uint32_t> dirty_texture_handles_;
   std::unordered_map<uint32_t, uint32_t> vector_font_ids_;
   NativeVirtualResourceRegistry virtual_resource_registry_;

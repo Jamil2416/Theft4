@@ -253,7 +253,10 @@ bool Gta4NativeGraphicsSystem::PublishNativeMetalFrame(
     bytes.generation=0;bytes.conversion={};bytes.value.clear();
   });
   arena_done=tick();
-  if(present.device&&!diagnostic_scan)ReleaseUnusedMetalBufferResources(active_texture_frame_);
+  if(present.device&&!diagnostic_scan) {
+    ReleaseUnusedMetalBufferResources(active_texture_frame_);
+    ReleaseUnusedMetalTextureResources(active_texture_frame_);
+  }
   // CPU ownership/content journals are speculative until the entire batch is
   // accepted. Earlier clears never become visible when a later draw rejects.
   // Immutable packets are independently safe to cache even if frame admission

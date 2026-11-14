@@ -789,7 +789,9 @@ enum : uint32_t {
   // Snapshot of the texture-copy table (render worker, try_lock).
   TexGuest, TexGuestMiB, TexGpu, TexGpuMiB, TexExclusiveGuest, TexExclusiveGuestMiB,
   TexIdle10s, TexIdle10sMiB, TexIdle60s, TexIdle60sMiB, TexIdle300s, TexIdle300sMiB,
-  TexDirtyHandles, TexFontReplacements, TexFrame, Count
+  TexDirtyHandles, TexFontReplacements, TexFrame,
+  // Cumulative Metal texture sweep (render worker).
+  TexReclaimed, TexReclaimedMiB, Count
 };
 constexpr const char* kNames =
     "presents,metal_libraries,metal_functions,metal_pipelines,archive_adds,"
@@ -800,7 +802,7 @@ constexpr const char* kNames =
     "release_requests,release_texture_hits,release_texture_shared,release_buffer_hits,release_misses,"
     "tex_guest,tex_guest_mib,tex_gpu,tex_gpu_mib,tex_exclusive_guest,tex_exclusive_guest_mib,"
     "tex_idle10s,tex_idle10s_mib,tex_idle60s,tex_idle60s_mib,tex_idle300s,tex_idle300s_mib,"
-    "tex_dirty_handles,tex_font_replacements,tex_frame";
+    "tex_dirty_handles,tex_font_replacements,tex_frame,tex_reclaimed,tex_reclaimed_mib";
 std::array<std::atomic<uint64_t>, Count> values{};
 void Set(uint32_t field, uint64_t value) { values[field].store(value, std::memory_order_relaxed); }
 void Add(uint32_t field) { values[field].fetch_add(1, std::memory_order_relaxed); }
@@ -5635,6 +5637,9 @@ bool Gta4NativeGraphicsSystem::ValidateAndCopyCommand(const void* command, size_
         }
       }
     }
+    if (selected_source)
+      selected_source->last_used_frame.store(
+          g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
     CaptureRecordResource(native_command, native_command.present_source, selected_source);
     if (ShouldLogDiagnosticFrame(present.submitted_frame)) {
       std::fprintf(
@@ -7080,6 +7085,9 @@ Gta4NativeGraphicsSystem::CaptureTextureResource(uint32_t handle,
   texture_resources_[handle] = resource;
   resource->last_used_frame.store(g_native_memory_profile_event_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
   cache_stats::CountTexture(resource->gpu_produced, replacing);
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+  if (!resource->gpu_produced) metal_texture_retirement_.Track(handle);
+#endif
   dirty_texture_handles_.erase(handle);
   RecordNativeMemoryLifecycle(
       memory::ResourceKind::kTextureResource,
@@ -7676,6 +7684,9 @@ void Gta4NativeGraphicsSystem::RenderWorkerMain() {
         {
           std::lock_guard lock(texture_resource_mutex_);
           texture_resources_.clear();
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+          metal_texture_retirement_.Clear();
+#endif
           dirty_texture_handles_.clear();
           virtual_resource_registry_.Clear();
           virtual_surface_registry_revision_.fetch_add(1, std::memory_order_release);
@@ -20768,6 +20779,52 @@ void Gta4NativeGraphicsSystem::ReleaseUnusedMetalBufferResources(uint32_t frame)
     buffer_resources_.erase(found);
     return true;
   });
+}
+
+void Gta4NativeGraphicsSystem::ReleaseUnusedMetalTextureResources(uint32_t frame) {
+  // Metal never reaches ClearGuestOutput, whose Vulkan eviction is the only
+  // other path that drops guest texture copies, and GTA IV does not send
+  // release commands for textures (13 Nov: 23 releases, none for a texture,
+  // while 21,933 copies were created). Without this the table grew ~50 MiB a
+  // minute until the address space ran out. Same rules as the Vulkan eviction
+  // and the buffer sweep above: only guest snapshots the table alone owns
+  // (no queued command, alias or Metal draw holds them), unused for
+  // kRetentionFrames title frames. A later bind recaptures the texture from
+  // guest memory through the ordinary first-capture path. The Metal image
+  // cache holds weak owners, so its entry expires and is swept with it.
+  constexpr uint32_t kRetentionFrames = 1800;  // 60 s at 30 title frames/s.
+  NativeWorkBudget release_budget(8, 2 * 1024 * 1024);
+  std::vector<std::shared_ptr<const NativeTextureResource>> released;
+  {
+    std::lock_guard lock(texture_resource_mutex_);
+    metal_texture_retirement_.Sweep(32, [&](uint32_t handle) {
+      const auto found = texture_resources_.find(handle);
+      if (found == texture_resources_.end() || !found->second) return true;
+      const auto& owner = found->second;
+      // GPU-produced content exists only on the host and cannot be
+      // recaptured (the Vulkan eviction skips it too). Font substitutes are
+      // few; keep them.
+      if (owner->gpu_produced || owner->vector_font_replacement) return true;
+      if (!ShouldReclaimNativeBuffer(owner.use_count() == 1, false, frame,
+                                    owner->last_used_frame.load(std::memory_order_relaxed),
+                                    kRetentionFrames)) return false;
+      const uint64_t bytes = owner->payload.capacity();
+      if (!release_budget.Consume(bytes)) return false;
+      RecordNativeMemoryLifecycle(memory::ResourceKind::kTextureResource,
+          memory::LifecycleAction::kDestroy, memory::LifecycleReason::kUnused, handle,
+          owner->generation, 0, owner->payload.size(), bytes, 0, frame,
+          uint32_t(owner->info.format));
+      cache_stats::Add(cache_stats::TexReclaimed);
+      reclaimed_texture_bytes_ += bytes;
+      cache_stats::Set(cache_stats::TexReclaimedMiB, reclaimed_texture_bytes_ >> 20);
+      // Free the payload after the lock is released.
+      released.push_back(std::move(found->second));
+      dirty_texture_handles_.erase(handle);
+      texture_resources_.erase(found);
+      return true;
+    });
+  }
+  released.clear();
 }
 #endif
 
@@ -38028,6 +38085,9 @@ void Gta4NativeGraphicsSystem::DestroyVulkanWorkerObjects() {
   {
     std::lock_guard lock(texture_resource_mutex_);
     texture_resources_.clear();
+#ifdef THEFT4_DIRECT_METAL_BACKEND
+    metal_texture_retirement_.Clear();
+#endif
     dirty_texture_handles_.clear();
     next_texture_generation_ = 1;
   }
